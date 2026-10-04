@@ -1,0 +1,37 @@
+graph TD
+    A[User sends message] --> B{classify_message<br/>rule-based, no LLM}
+
+    B -->|STYLE| C[cache_lookup<br/>skip cache]
+    B -->|FOLLOW-UP| C
+    B -->|STANDALONE| C
+
+    C -->|STYLE: always skip| G[generate<br/>restyle previous answer]
+    C -->|FOLLOW-UP: contextual exact match only| D{Cache Hit?}
+    C -->|STANDALONE: exact → semantic → guards| D
+
+    D -->|HIT| K[finalize<br/>return cached answer]
+    D -->|MISS + FOLLOW-UP| E[rewrite_question<br/>LLM: standalone form]
+    D -->|MISS + STANDALONE| F[retrieve<br/>FAISS book index, top 4]
+
+    E --> F
+
+    F --> H{scope_check<br/>best score ≥ threshold?}
+    H -->|No| I[Polite decline<br/>no LLM call]
+    H -->|Yes| J[generate<br/>LLM answers from context]
+
+    J --> L[validate<br/>check citations]
+    I --> L
+    G --> L
+
+    L --> M{maybe_store<br/>cache policy check}
+    M -->|Cacheable| N[Store in SQLite + FAISS]
+    M -->|Not cacheable| K
+    N --> K
+
+    K --> O[Return response<br/>reply, citations, cache_hit, latency_ms]
+
+    style A fill:#4a9eff,color:#fff
+    style D fill:#ff9800,color:#fff
+    style K fill:#4caf50,color:#fff
+    style O fill:#4caf50,color:#fff
+    style I fill:#f44336,color:#fff

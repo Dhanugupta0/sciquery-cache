@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+data/cache.db
+.venv/
+venv/
+
+# Large binary files — don't push to GitHub
+Science-10th-NCERT/
+data/pdfs/
+data/index/*.index
+*.pdf
