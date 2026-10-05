@@ -7,6 +7,14 @@ import time
 import httpx
 import streamlit as st
 
+# Sync Streamlit secrets to os.environ so FastAPI backend thread has them
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str) and _k not in os.environ:
+            os.environ[_k] = _v
+except Exception:
+    pass
+
 # ---- config ----
 
 API_URL = os.getenv("API_URL", "").rstrip("/")
