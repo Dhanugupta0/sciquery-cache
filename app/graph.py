@@ -216,7 +216,26 @@ def cache_lookup(state: PipelineState) -> PipelineState:
 
 def _invoke_llm(messages: list[dict], llm_client=None, max_retries: int = 1):
     """Invoke the LLM, retrying on 429 rate limit or failing over to LLM_FALLBACK_MODEL on 429/404."""
+    from app.config import get_api_key, LLM_BASE_URL, LLM_MODEL
+
     client = llm_client if llm_client is not None else _llm
+
+    # If client was initialized with a dummy key but a real key is now present, refresh
+    current_key = get_api_key()
+    if current_key and current_key != "dummy-key-pending-secrets":
+        client_key = getattr(client, "openai_api_key", None)
+        client_key_val = client_key.get_secret_value() if hasattr(client_key, "get_secret_value") else str(client_key or "")
+        if client_key_val == "dummy-key-pending-secrets":
+            from langchain_openai import ChatOpenAI
+            client = ChatOpenAI(
+                base_url=getattr(client, "base_url", LLM_BASE_URL),
+                api_key=current_key,
+                model=getattr(client, "model_name", LLM_MODEL),
+                temperature=getattr(client, "temperature", 0),
+                max_tokens=getattr(client, "max_tokens", 800),
+                max_retries=0,
+            )
+
     for attempt in range(max_retries + 1):
         try:
             return client.invoke(messages)
@@ -225,6 +244,13 @@ def _invoke_llm(messages: list[dict], llm_client=None, max_retries: int = 1):
             status_code = getattr(e, "status_code", None)
             is_429 = "429" in err_str or "rate limit" in err_str or status_code == 429
             is_404 = "404" in err_str or "not found" in err_str or status_code == 404
+            is_401 = "401" in err_str or "invalid api key" in err_str or "invalid_api_key" in err_str or status_code == 401
+
+            if is_401:
+                log.error(f"LLM authentication (401) error: {e}")
+                raise RuntimeError(
+                    "Invalid or missing Groq API Key. Please provide a valid LLM_API_KEY in Streamlit Secrets or sidebar."
+                ) from e
 
             # Failover to fallback model on 429 or 404
             if (is_429 or is_404) and _fallback_llm is not None and client != _fallback_llm:

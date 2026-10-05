@@ -77,6 +77,8 @@ def chat(req: ChatRequest):
         err_str = str(e).lower()
         if "429" in err_str or "rate limit" in err_str or getattr(e, "status_code", None) == 429:
             msg = "Too many requests right now. Please wait a moment and try again."
+        elif "api key" in err_str or "401" in err_str or "credentials" in err_str or "invalid_api_key" in err_str:
+            msg = "⚠️ Groq API key is missing or invalid. Please configure LLM_API_KEY in Streamlit Cloud Secrets (Settings → Secrets) or enter it in the sidebar."
         else:
             msg = "Sorry, something went wrong. Please try again."
         return ChatResponse(

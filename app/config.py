@@ -21,17 +21,38 @@ try:
 except Exception:
     pass
 
+def get_api_key() -> str:
+    """Resolve API key dynamically from env or Streamlit secrets."""
+    for var in ("LLM_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
+        val = os.getenv(var)
+        if val and val.strip() and val.strip() != "dummy-key-pending-secrets":
+            return val.strip().strip('"').strip("'")
+
+    try:
+        import streamlit as st
+        for var in ("LLM_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
+            if var in st.secrets and st.secrets[var]:
+                val = str(st.secrets[var]).strip().strip('"').strip("'")
+                if val and val != "dummy-key-pending-secrets":
+                    return val
+        for sec in st.secrets.values():
+            if isinstance(sec, dict):
+                for var in ("LLM_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
+                    if var in sec and sec[var]:
+                        val = str(sec[var]).strip().strip('"').strip("'")
+                        if val and val != "dummy-key-pending-secrets":
+                            return val
+    except Exception:
+        pass
+
+    return ""
+
+
 # --- LLM ---
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
-
-# Ensure OPENAI_API_KEY is populated for langchain-openai SDK
-if LLM_API_KEY:
-    os.environ["OPENAI_API_KEY"] = LLM_API_KEY
-else:
-    # Safe dummy key to avoid crashing FastAPI startup if secrets are not entered yet
-    LLM_API_KEY = "dummy-key-pending-secrets"
-    os.environ["OPENAI_API_KEY"] = LLM_API_KEY
+LLM_API_KEY = get_api_key() or "dummy-key-pending-secrets"
+os.environ["LLM_API_KEY"] = LLM_API_KEY
+os.environ["OPENAI_API_KEY"] = LLM_API_KEY
 
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")
 LLM_NUMERIC_MODEL = os.getenv("LLM_NUMERIC_MODEL", "openai/gpt-oss-120b")

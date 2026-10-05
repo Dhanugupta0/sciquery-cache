@@ -11,16 +11,18 @@ import streamlit as st
 try:
     for _k, _v in st.secrets.items():
         if isinstance(_v, str):
-            os.environ[_k] = _v
+            os.environ[_k] = _v.strip().strip('"').strip("'")
         elif isinstance(_v, dict):
             for _subk, _subv in _v.items():
                 if isinstance(_subv, str):
-                    os.environ[_subk] = _subv
+                    os.environ[_subk] = _subv.strip().strip('"').strip("'")
 except Exception:
     pass
 
-if os.getenv("LLM_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = os.getenv("LLM_API_KEY")
+from app.config import get_api_key
+_resolved_key = get_api_key()
+os.environ["LLM_API_KEY"] = _resolved_key
+os.environ["OPENAI_API_KEY"] = _resolved_key
 
 # ---- config ----
 
@@ -133,6 +135,27 @@ with st.sidebar:
         st.session_state.session_id = create_session(base_url)
         st.session_state.messages = []
         st.rerun()
+
+    st.divider()
+
+    # API Key Configuration
+    active_key = get_api_key()
+    if active_key and active_key != "dummy-key-pending-secrets":
+        st.caption("🟢 Groq API Key active")
+    else:
+        st.warning("⚠️ Groq API Key missing")
+        key_input = st.text_input(
+            "Enter Groq Key:",
+            type="password",
+            placeholder="gsk_...",
+            help="Get a free key from console.groq.com or set LLM_API_KEY in Streamlit Secrets.",
+        )
+        if key_input:
+            clean = key_input.strip().strip('"').strip("'")
+            os.environ["LLM_API_KEY"] = clean
+            os.environ["OPENAI_API_KEY"] = clean
+            st.success("Key applied!")
+            st.rerun()
 
     st.divider()
     st.markdown(

@@ -13,14 +13,20 @@ socket.getaddrinfo = _ipv4_first_getaddrinfo
 
 from langchain_openai import ChatOpenAI
 
-from app.config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_NUMERIC_MODEL, LLM_FALLBACK_MODEL
+from app.config import (
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_NUMERIC_MODEL,
+    LLM_FALLBACK_MODEL,
+    get_api_key,
+)
 
 
 def get_llm() -> ChatOpenAI:
     """Create the general LLM client. Called once at startup."""
     return ChatOpenAI(
         base_url=LLM_BASE_URL,
-        api_key=LLM_API_KEY,
+        api_key=get_api_key(),
         model=LLM_MODEL,
         temperature=0,
         max_tokens=600,
@@ -32,7 +38,7 @@ def get_numeric_llm() -> ChatOpenAI:
     """Create the numerical LLM client using LLM_NUMERIC_MODEL."""
     return ChatOpenAI(
         base_url=LLM_BASE_URL,
-        api_key=LLM_API_KEY,
+        api_key=get_api_key(),
         model=LLM_NUMERIC_MODEL,
         temperature=0,
         max_tokens=800,
@@ -44,7 +50,7 @@ def get_fallback_llm() -> ChatOpenAI:
     """Create the fallback LLM client using LLM_FALLBACK_MODEL for 429/404 failover."""
     return ChatOpenAI(
         base_url=LLM_BASE_URL,
-        api_key=LLM_API_KEY,
+        api_key=get_api_key(),
         model=LLM_FALLBACK_MODEL,
         temperature=0,
         max_tokens=800,
