@@ -8,9 +8,31 @@ from dotenv import load_dotenv
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
+# Sync Streamlit secrets if running inside Streamlit Cloud
+try:
+    import streamlit as st
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str) and _k not in os.environ:
+            os.environ[_k] = _v
+        elif isinstance(_v, dict):
+            for _subk, _subv in _v.items():
+                if isinstance(_subv, str) and _subk not in os.environ:
+                    os.environ[_subk] = _subv
+except Exception:
+    pass
+
 # --- LLM ---
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+
+# Ensure OPENAI_API_KEY is populated for langchain-openai SDK
+if LLM_API_KEY:
+    os.environ["OPENAI_API_KEY"] = LLM_API_KEY
+else:
+    # Safe dummy key to avoid crashing FastAPI startup if secrets are not entered yet
+    LLM_API_KEY = "dummy-key-pending-secrets"
+    os.environ["OPENAI_API_KEY"] = LLM_API_KEY
+
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")
 LLM_NUMERIC_MODEL = os.getenv("LLM_NUMERIC_MODEL", "openai/gpt-oss-120b")
 LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")

@@ -10,10 +10,17 @@ import streamlit as st
 # Sync Streamlit secrets to os.environ so FastAPI backend thread has them
 try:
     for _k, _v in st.secrets.items():
-        if isinstance(_v, str) and _k not in os.environ:
+        if isinstance(_v, str):
             os.environ[_k] = _v
+        elif isinstance(_v, dict):
+            for _subk, _subv in _v.items():
+                if isinstance(_subv, str):
+                    os.environ[_subk] = _subv
 except Exception:
     pass
+
+if os.getenv("LLM_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = os.getenv("LLM_API_KEY")
 
 # ---- config ----
 
