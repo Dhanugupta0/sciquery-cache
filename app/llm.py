@@ -1,8 +1,19 @@
 """LLM client and prompt templates."""
 
+import socket
+
+# Force IPv4 preference to avoid broken IPv6 routes causing connect timeouts
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_first_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    res = _orig_getaddrinfo(host, port, family, type, proto, flags)
+    return sorted(res, key=lambda x: 0 if x[0] == socket.AF_INET else 1)
+
+socket.getaddrinfo = _ipv4_first_getaddrinfo
+
 from langchain_openai import ChatOpenAI
 
-from app.config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_NUMERIC_MODEL
+from app.config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_NUMERIC_MODEL, LLM_FALLBACK_MODEL
 
 
 def get_llm() -> ChatOpenAI:
@@ -12,6 +23,7 @@ def get_llm() -> ChatOpenAI:
         api_key=LLM_API_KEY,
         model=LLM_MODEL,
         temperature=0,
+        max_tokens=600,
     )
 
 
@@ -22,6 +34,18 @@ def get_numeric_llm() -> ChatOpenAI:
         api_key=LLM_API_KEY,
         model=LLM_NUMERIC_MODEL,
         temperature=0,
+        max_tokens=800,
+    )
+
+
+def get_fallback_llm() -> ChatOpenAI:
+    """Create the fallback LLM client using LLM_FALLBACK_MODEL for 429/404 failover."""
+    return ChatOpenAI(
+        base_url=LLM_BASE_URL,
+        api_key=LLM_API_KEY,
+        model=LLM_FALLBACK_MODEL,
+        temperature=0,
+        max_tokens=800,
     )
 
 
@@ -48,6 +72,7 @@ NUMERIC_SYSTEM = """You are a helpful tutor for NCERT Class 10 Science numerical
 
 RULES:
 - Answer using the provided context and textbook principles.
+- Write plain text only. Do NOT use LaTeX, do NOT use \\( \\), \\[ \\], or $ symbols. Use simple plain text for formulas, fractions, and units (e.g. 1/v - 1/u = 1/f, cm).
 - Write the formula (remember: lens formula is 1/v - 1/u = 1/f; mirror formula is 1/v + 1/u = 1/f).
 - State the sign convention.
 - Substitute the values with their signs.

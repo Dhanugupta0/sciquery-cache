@@ -289,6 +289,34 @@ class TestCachePolicy:
         assert not ok
         assert "numerical question" in reason
 
+    def test_focal_length_not_numerical_and_cacheable(self):
+        from app.cache.policy import is_numerical_question
+        q = "What is focal length?"
+        assert not is_numerical_question(q)
+        ok, reason = should_cache(
+            q,
+            "Focal length is the distance between the pole and the principal focus.",
+            ["Light – Reflection and Refraction"],
+            in_scope=True,
+            is_style=False,
+        )
+        assert ok
+        assert reason == "cacheable"
+
+    def test_image_distance_with_digits_is_numerical(self):
+        from app.cache.policy import is_numerical_question
+        q = "Find the image distance when u = 30 cm"
+        assert is_numerical_question(q)
+        ok, reason = should_cache(
+            q,
+            "v = +60 cm",
+            ["Light – Reflection and Refraction"],
+            in_scope=True,
+            is_style=False,
+        )
+        assert not ok
+        assert "numerical question" in reason
+
 
 class TestNumberExtraction:
     def test_extracts_with_units(self):

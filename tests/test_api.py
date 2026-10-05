@@ -67,3 +67,37 @@ class TestLLMConfig:
         assert str(llm.openai_api_base).rstrip("/") == LLM_BASE_URL.rstrip("/")
         assert llm.model_name == LLM_MODEL
 
+
+class TestConcurrentChat:
+    def test_ten_concurrent_chat_requests(self, client):
+        """10 concurrent /chat requests must all succeed without errors or race conditions."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        sid = client.post("/session").json()["session_id"]
+        questions = [
+            "hi",
+            "What is refraction?",
+            "What is Ohm's law?",
+            "hi",
+            "What is photosynthesis?",
+            "What is refraction?",
+            "hello",
+            "What is an electric fuse?",
+            "What is refraction?",
+            "thanks",
+        ]
+
+        def send_chat(msg):
+            return client.post("/chat", json={"session_id": sid, "message": msg})
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            responses = list(executor.map(send_chat, questions))
+
+        assert len(responses) == 10
+        for r in responses:
+            assert r.status_code == 200
+            data = r.json()
+            assert "reply" in data
+            assert len(data["reply"]) > 0
+            assert "latency_ms" in data
+

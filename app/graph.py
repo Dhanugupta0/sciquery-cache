@@ -9,7 +9,7 @@ from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
 
 from app.llm import (
-    get_llm, get_numeric_llm, ANSWER_SYSTEM, ANSWER_HUMAN,
+    get_llm, get_numeric_llm, get_fallback_llm, ANSWER_SYSTEM, ANSWER_HUMAN,
     NUMERIC_SYSTEM,
     REWRITE_SYSTEM, REWRITE_HUMAN,
     STYLE_SYSTEM, STYLE_HUMAN,
@@ -192,14 +192,27 @@ def cache_lookup(state: PipelineState) -> PipelineState:
 
 
 def _invoke_llm(messages: list[dict], llm_client=None, max_retries: int = 1):
-    """Invoke the LLM, retrying once on 429 rate limit."""
+    """Invoke the LLM, retrying on 429 rate limit or failing over to LLM_FALLBACK_MODEL on 429/404."""
     client = llm_client if llm_client is not None else _llm
     for attempt in range(max_retries + 1):
         try:
             return client.invoke(messages)
         except Exception as e:
             err_str = str(e).lower()
-            is_429 = "429" in err_str or "rate limit" in err_str or getattr(e, "status_code", None) == 429
+            status_code = getattr(e, "status_code", None)
+            is_429 = "429" in err_str or "rate limit" in err_str or status_code == 429
+            is_404 = "404" in err_str or "not found" in err_str or status_code == 404
+
+            # Failover to fallback model on 429 or 404
+            if (is_429 or is_404) and _fallback_llm is not None and client != _fallback_llm:
+                log.warning(f"Error ({'429' if is_429 else '404'}) on primary model, failing over to LLM_FALLBACK_MODEL...")
+                client = _fallback_llm
+                try:
+                    return client.invoke(messages)
+                except Exception as fb_err:
+                    log.error(f"Fallback model also failed: {fb_err}")
+                    raise
+
             if is_429 and attempt < max_retries:
                 log.warning("Rate limit (429) hit, retrying in 1s...")
                 time.sleep(1.0)
@@ -524,6 +537,7 @@ def route_after_scope(state: PipelineState) -> str:
 # Module-level singletons, initialized via init_pipeline()
 _llm = None
 _numeric_llm = None
+_fallback_llm = None
 _retriever = None
 _cache = None
 _sessions = None
@@ -532,11 +546,12 @@ _graph = None
 
 def init_pipeline(sessions: SessionStore | None = None):
     """Initialize singletons and compile the LangGraph."""
-    global _llm, _numeric_llm, _retriever, _cache, _sessions, _graph
+    global _llm, _numeric_llm, _fallback_llm, _retriever, _cache, _sessions, _graph
 
     log.info("Initializing pipeline...")
     _llm = get_llm()
     _numeric_llm = get_numeric_llm()
+    _fallback_llm = get_fallback_llm()
     _retriever = BookRetriever()
     _cache = CacheStore()
     _sessions = sessions or SessionStore()

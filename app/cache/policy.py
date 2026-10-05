@@ -1,4 +1,4 @@
-"""Cache policy — decides what to cache and what to never cache."""
+import re
 
 from app.cache.normalize import normalize, STOPWORDS, extract_numbers
 
@@ -39,15 +39,15 @@ def is_style_request(text: str, has_previous_answer: bool = True) -> bool:
     return len(topic_words) == 0
 
 
-_NUMERIC_TRIGGERS = ["find", "calculate", "focal length", "image distance"]
+_NUMERIC_TRIGGERS = ("calculate", "compute")
 
 
 def is_numerical_question(text: str) -> bool:
-    """Detect numerical questions: contains digits, or words like find, calculate, focal length, image distance."""
-    lower = text.lower()
-    if any(c.isdigit() for c in lower):
+    """True only if the text contains a digit, or the words 'calculate' or 'compute'."""
+    if any(c.isdigit() for c in text):
         return True
-    return any(w in lower for w in _NUMERIC_TRIGGERS)
+    lower = text.lower()
+    return any(w in lower.split() or w in re.findall(r"\b\w+\b", lower) for w in _NUMERIC_TRIGGERS)
 
 
 def should_cache(question: str, answer: str, citations: list[str],

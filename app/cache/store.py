@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -26,6 +27,7 @@ class CacheStore:
     """SQLite + FAISS cache for question-answer pairs."""
 
     def __init__(self):
+        self._lock = threading.RLock()
         os.makedirs(os.path.dirname(CACHE_DB_PATH), exist_ok=True)
         self.conn = sqlite3.connect(CACHE_DB_PATH, check_same_thread=False)
         self._create_table()
@@ -124,107 +126,108 @@ class CacheStore:
                is_followup: bool = False) -> tuple[dict | None, str]:
         """Look up a question in the cache.
         Returns (entry_or_None, reason_string)."""
+        with self._lock:
+            # For follow-ups: only contextual exact match is safe.
+            # The same follow-up text ("What about its laws?") means different
+            # things depending on the previous standalone question.
+            if is_followup:
+                if prev_standalone:
+                    ckey = contextual_key(prev_standalone, question)
+                    if ckey in self.contextual_map:
+                        entry = self.contextual_map[ckey]
+                        self._bump_hit(entry["id"])
+                        return entry, "hit: contextual exact match"
+                return None, "miss: follow-up, no contextual exact match"
 
-        # For follow-ups: only contextual exact match is safe.
-        # The same follow-up text ("What about its laws?") means different
-        # things depending on the previous standalone question.
-        if is_followup:
-            if prev_standalone:
-                ckey = contextual_key(prev_standalone, question)
-                if ckey in self.contextual_map:
-                    entry = self.contextual_map[ckey]
-                    self._bump_hit(entry["id"])
-                    return entry, "hit: contextual exact match"
-            return None, "miss: follow-up, no contextual exact match"
+            # Step 1: exact match on normalized hash (standalone only)
+            qhash = hash_text(question)
+            if qhash in self.hash_map:
+                entry = self.hash_map[qhash]
+                self._bump_hit(entry["id"])
+                return entry, "hit: exact match"
 
-        # Step 1: exact match on normalized hash (standalone only)
-        qhash = hash_text(question)
-        if qhash in self.hash_map:
-            entry = self.hash_map[qhash]
-            self._bump_hit(entry["id"])
-            return entry, "hit: exact match"
+            # Step 2: check if semantic lookup is allowed
+            has_numbers = bool(extract_numbers(question))
+            allowed, reason = should_serve_semantic(question, has_numbers)
+            if not allowed:
+                return None, f"miss: {reason}"
 
-        # Step 2: check if semantic lookup is allowed
-        has_numbers = bool(extract_numbers(question))
-        allowed, reason = should_serve_semantic(question, has_numbers)
-        if not allowed:
-            return None, f"miss: {reason}"
+            # Step 3: semantic search
+            if self.faiss_index.ntotal == 0:
+                return None, "miss: cache empty"
 
-        # Step 3: semantic search
-        if self.faiss_index.ntotal == 0:
-            return None, "miss: cache empty"
+            vec = self._embed(question)
+            k = min(CACHE_TOP_K, self.faiss_index.ntotal)
+            scores, indices = self.faiss_index.search(vec, k)
 
-        vec = self._embed(question)
-        k = min(CACHE_TOP_K, self.faiss_index.ntotal)
-        scores, indices = self.faiss_index.search(vec, k)
+            best_score = float(scores[0][0])
+            best_idx = int(indices[0][0])
 
-        best_score = float(scores[0][0])
-        best_idx = int(indices[0][0])
+            if best_score < CACHE_SIMILARITY_THRESHOLD:
+                return None, f"miss: best similarity {best_score:.4f} < {CACHE_SIMILARITY_THRESHOLD}"
 
-        if best_score < CACHE_SIMILARITY_THRESHOLD:
-            return None, f"miss: best similarity {best_score:.4f} < {CACHE_SIMILARITY_THRESHOLD}"
+            candidate = self.cache_entries[best_idx]
 
-        candidate = self.cache_entries[best_idx]
+            # Step 4: run safety guards
+            passed, guard_reason = run_all_guards(question, candidate["question"])
+            if not passed:
+                return None, f"miss: {guard_reason}"
 
-        # Step 4: run safety guards
-        passed, guard_reason = run_all_guards(question, candidate["question"])
-        if not passed:
-            return None, f"miss: {guard_reason}"
-
-        self._bump_hit(candidate["id"])
-        return candidate, f"hit: semantic (sim={best_score:.4f}), {guard_reason}"
+            self._bump_hit(candidate["id"])
+            return candidate, f"hit: semantic (sim={best_score:.4f}), {guard_reason}"
 
     def store(self, question: str, answer: str, citations: list[str],
               pages: list[int] | None = None, ctx_key: str | None = None):
         """Store a new entry in the cache."""
-        norm = normalize(question)
-        qhash = hash_text(question)
+        with self._lock:
+            norm = normalize(question)
+            qhash = hash_text(question)
 
-        # Don't store duplicates
-        if ctx_key:
-            if ctx_key in self.contextual_map:
-                return
-        else:
-            if qhash in self.hash_map:
-                return
+            # Don't store duplicates
+            if ctx_key:
+                if ctx_key in self.contextual_map:
+                    return
+            else:
+                if qhash in self.hash_map:
+                    return
 
-        # Follow-ups don't need FAISS embeddings since they only match contextually
-        vec = None if ctx_key else self._embed(question)
-        embedding_blob = vec.tobytes() if vec is not None else None
+            # Follow-ups don't need FAISS embeddings since they only match contextually
+            vec = None if ctx_key else self._embed(question)
+            embedding_blob = vec.tobytes() if vec is not None else None
 
-        now = datetime.now(timezone.utc).isoformat()
-        pages_list = pages or []
-        cur = self.conn.execute(
-            "INSERT INTO cache (question, normalized, question_hash, embedding, "
-            "answer, citations, pages, created_at, textbook_version, prompt_version, contextual_key) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (question, norm, qhash, embedding_blob, answer,
-             json.dumps(citations), json.dumps(pages_list), now,
-             TEXTBOOK_VERSION, PROMPT_VERSION, ctx_key),
-        )
-        self.conn.commit()
-        entry_id = cur.lastrowid
+            now = datetime.now(timezone.utc).isoformat()
+            pages_list = pages or []
+            cur = self.conn.execute(
+                "INSERT INTO cache (question, normalized, question_hash, embedding, "
+                "answer, citations, pages, created_at, textbook_version, prompt_version, contextual_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (question, norm, qhash, embedding_blob, answer,
+                 json.dumps(citations), json.dumps(pages_list), now,
+                 TEXTBOOK_VERSION, PROMPT_VERSION, ctx_key),
+            )
+            self.conn.commit()
+            entry_id = cur.lastrowid
 
-        entry = {
-            "id": entry_id,
-            "question": question,
-            "normalized": norm,
-            "question_hash": qhash,
-            "answer": answer,
-            "citations": citations,
-            "pages": pages_list,
-            "contextual_key": ctx_key,
-        }
+            entry = {
+                "id": entry_id,
+                "question": question,
+                "normalized": norm,
+                "question_hash": qhash,
+                "answer": answer,
+                "citations": citations,
+                "pages": pages_list,
+                "contextual_key": ctx_key,
+            }
 
-        # Update in-memory structures
-        if ctx_key:
-            self.contextual_map[ctx_key] = entry
-        else:
-            self.hash_map[qhash] = entry
-            self.faiss_index.add(vec)
-            self.cache_entries.append(entry)
+            # Update in-memory structures
+            if ctx_key:
+                self.contextual_map[ctx_key] = entry
+            else:
+                self.hash_map[qhash] = entry
+                self.faiss_index.add(vec)
+                self.cache_entries.append(entry)
 
-        log.info(f"Cached: {question[:60]}...")
+            log.info(f"Cached: {question[:60]}...")
 
     def _embed(self, text: str) -> np.ndarray:
         vec = list(self.embed_model.embed([text]))[0]
@@ -233,8 +236,9 @@ class CacheStore:
         return vec
 
     def _bump_hit(self, entry_id: int):
-        self.conn.execute(
-            "UPDATE cache SET hit_count = hit_count + 1 WHERE id = ?",
-            (entry_id,),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE cache SET hit_count = hit_count + 1 WHERE id = ?",
+                (entry_id,),
+            )
+            self.conn.commit()
