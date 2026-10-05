@@ -18,8 +18,8 @@ from app.retriever import BookRetriever
 from app.sessions import SessionStore
 from app.cache.store import CacheStore
 from app.cache.normalize import normalize, contextual_key, extract_numbers, STOPWORDS
-from app.cache.policy import should_cache, is_style_request, is_numerical_question
-from app.config import SCOPE_THRESHOLD
+from app.cache.policy import should_cache, is_style_request, is_numerical_question, matches_style_pattern
+from app.config import SCOPE_THRESHOLD, SCOPE_MIN_THRESHOLD
 
 log = logging.getLogger(__name__)
 
@@ -122,20 +122,43 @@ def classify_message(state: PipelineState) -> PipelineState:
 
     session = _sessions.get(state.get("session_id", ""))
     has_prev_answer = bool(session and session.get("last_answer"))
+    has_prev_question = bool(session and session.get("last_standalone_question"))
 
     # Check for style request first
-    if is_style_request(msg, has_previous_answer=has_prev_answer):
+    if matches_style_pattern(msg):
+        if not has_prev_answer:
+            reply_text = "Ask me a question first, then I can explain it more simply."
+            state["msg_type"] = "NO_CONTEXT_STYLE"
+            state["answer"] = reply_text
+            state["reply"] = reply_text
+            state["citations"] = []
+            state["pages"] = []
+            state["in_scope"] = True
+            state["cache_hit"] = False
+            state["cache_reason"] = "skip: style without previous answer"
+            log.info(f"Style request without previous answer: '{msg}'")
+            return state
         state["msg_type"] = "STYLE"
         log.info("Classified as STYLE")
         return state
 
     # Check for follow-up signals
     if is_followup_message(msg):
-        # Only classify as follow-up if there's conversation history or standalone test
-        if session is None or session.get("last_standalone_question"):
-            state["msg_type"] = "FOLLOW_UP"
-            log.info("Classified as FOLLOW_UP")
+        if not has_prev_question:
+            reply_text = "Which topic do you mean? Please ask a full question first, then I can follow up."
+            state["msg_type"] = "NO_CONTEXT_FOLLOWUP"
+            state["answer"] = reply_text
+            state["reply"] = reply_text
+            state["citations"] = []
+            state["pages"] = []
+            state["in_scope"] = True
+            state["cache_hit"] = False
+            state["cache_reason"] = "skip: follow-up without previous question"
+            log.info(f"Follow-up without previous question: '{msg}'")
             return state
+        state["msg_type"] = "FOLLOW_UP"
+        log.info("Classified as FOLLOW_UP")
+        return state
 
     state["msg_type"] = "STANDALONE"
     log.info("Classified as STANDALONE")
@@ -148,10 +171,10 @@ def cache_lookup(state: PipelineState) -> PipelineState:
     """Check cache. GREETING, STYLE, and numerical questions always skip. FOLLOW_UP uses contextual exact only."""
     msg_type = state["msg_type"]
 
-    if msg_type == "GREETING":
+    if msg_type in ("GREETING", "NO_CONTEXT_FOLLOWUP", "NO_CONTEXT_STYLE"):
         state["cache_hit"] = False
-        state["cache_reason"] = "skip: greeting"
-        log.info("Cache: skip (greeting)")
+        state["cache_reason"] = f"skip: {msg_type.lower()}"
+        log.info(f"Cache: skip ({msg_type.lower()})")
         return state
 
     if msg_type == "STYLE":
@@ -307,15 +330,21 @@ def retrieve(state: PipelineState) -> PipelineState:
 # ---- scope check ----
 
 def scope_check(state: PipelineState) -> PipelineState:
-    """If best retrieval score is too low, decline without calling LLM."""
-    if state["best_score"] < SCOPE_THRESHOLD:
+    """Borderline band:
+    - score < SCOPE_MIN_THRESHOLD (0.58): declines without calling the LLM.
+    - 0.58 to 0.68: lets the LLM decide using in_scope.
+    - 0.68 and above: answers.
+    """
+    score = state["best_score"]
+    if score < SCOPE_MIN_THRESHOLD:
         state["in_scope"] = False
         state["answer"] = STANDARD_DECLINE_MESSAGE
         state["citations"] = []
         state["used_chapters"] = []
-        log.info(f"Out of scope: best score {state['best_score']:.4f} < {SCOPE_THRESHOLD}")
+        log.info(f"Out of scope: best score {score:.4f} < {SCOPE_MIN_THRESHOLD} (no LLM call)")
     else:
         state["in_scope"] = True
+        log.info(f"Scope check passed: best score {score:.4f} >= {SCOPE_MIN_THRESHOLD}")
     return state
 
 
@@ -361,6 +390,15 @@ def generate(state: PipelineState) -> PipelineState:
         if not in_scope or is_incomplete_answer(ans):
             log.info("Answer still incomplete after 8 chunks; declining.")
             in_scope = False
+            ans = STANDARD_DECLINE_MESSAGE
+            used_ch = []
+    elif not in_scope:
+        # Borderline band rule:
+        # 0.58 to 0.68 lets the LLM decide using in_scope.
+        # 0.68 and above answers.
+        if state.get("best_score", 0.0) >= SCOPE_THRESHOLD:
+            in_scope = True
+        else:
             ans = STANDARD_DECLINE_MESSAGE
             used_ch = []
 
@@ -499,7 +537,8 @@ def finalize(state: PipelineState) -> PipelineState:
     if session is not None:
         _sessions.add_turn(sid, "user", state["message"])
         _sessions.add_turn(sid, "assistant", state["reply"])
-        _sessions.set_last_answer(sid, state["reply"], state.get("citations", []))
+        if state["msg_type"] not in ("GREETING", "NO_CONTEXT_FOLLOWUP", "NO_CONTEXT_STYLE"):
+            _sessions.set_last_answer(sid, state["reply"], state.get("citations", []))
 
         # Track standalone question for follow-up context
         if state["msg_type"] == "STANDALONE":
@@ -516,7 +555,7 @@ def route_after_cache(state: PipelineState) -> str:
     """Route based on cache result."""
     if state.get("cache_hit"):
         return "finalize"
-    if state["msg_type"] == "GREETING":
+    if state["msg_type"] in ("GREETING", "NO_CONTEXT_FOLLOWUP", "NO_CONTEXT_STYLE"):
         return "finalize"
     if state["msg_type"] == "STYLE":
         return "generate"

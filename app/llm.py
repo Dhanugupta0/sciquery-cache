@@ -24,6 +24,7 @@ def get_llm() -> ChatOpenAI:
         model=LLM_MODEL,
         temperature=0,
         max_tokens=600,
+        max_retries=0,
     )
 
 
@@ -35,6 +36,7 @@ def get_numeric_llm() -> ChatOpenAI:
         model=LLM_NUMERIC_MODEL,
         temperature=0,
         max_tokens=800,
+        max_retries=0,
     )
 
 
@@ -46,6 +48,7 @@ def get_fallback_llm() -> ChatOpenAI:
         model=LLM_FALLBACK_MODEL,
         temperature=0,
         max_tokens=800,
+        max_retries=0,
     )
 
 
@@ -54,8 +57,9 @@ def get_fallback_llm() -> ChatOpenAI:
 ANSWER_SYSTEM = """You are a helpful tutor for NCERT Class 10 Science.
 
 RULES:
-- Answer using the provided context. Answer from partial context where possible.
-- Set in_scope to false ONLY when the context is clearly unrelated or completely lacks relevant information.
+- Answer using the provided context. Answer from partial context or concept descriptions where possible.
+- If the question is covered in the context, answer it clearly for a Class 10 student. Do not decline just because a formal definition is missing; explain what it is from its properties and behavior described.
+- If the question asks to name, list, explain, or define something that is not covered or directly supported by the context, you MUST set in_scope to false.
 - Write short, clear answers for a Class 10 student. Use simple English.
 - Cite the chapter name(s) you used in used_chapters.
 - Do NOT say "as I said before" or refer to earlier conversation.

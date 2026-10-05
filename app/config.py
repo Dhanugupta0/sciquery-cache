@@ -13,7 +13,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")
 LLM_NUMERIC_MODEL = os.getenv("LLM_NUMERIC_MODEL", "openai/gpt-oss-120b")
-LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "llama-3.3-70b-versatile")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")
 
 # --- Paths ---
 BOOK_INDEX_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "index")
@@ -25,9 +25,11 @@ EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 # --- Retriever ---
 RETRIEVAL_TOP_K = 6
-# Minimum cosine similarity for retrieved chunks to be considered relevant.
-# Below this → out-of-scope decline, no LLM call.
-# Calibrated from real scores: in-scope min 0.6875 (heart), off-topic max 0.6726 (renewable energy).
+# --- Scope Thresholds (Borderline Band) ---
+# Below SCOPE_MIN_THRESHOLD (0.58) -> declines without calling the LLM.
+# Between 0.58 and 0.68 -> borderline band: LLM decides using in_scope.
+# 0.68 and above -> answers.
+SCOPE_MIN_THRESHOLD = 0.58
 SCOPE_THRESHOLD = 0.68
 
 # --- Cache ---

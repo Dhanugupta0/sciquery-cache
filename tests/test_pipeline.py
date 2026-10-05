@@ -335,3 +335,47 @@ class TestChapterLineStripping:
             assert result["reply"] == "Electric current is the rate of flow of electric charges."
         finally:
             graph_mod._llm = real_llm
+
+
+class TestNoContextInterceptions:
+    """Test follow-up without previous question and style without previous answer."""
+
+    def test_followup_without_previous_question(self, pipeline_env):
+        import app.graph as graph_mod
+        run = pipeline_env["run"]
+        sessions = pipeline_env["sessions"]
+
+        real_llm = graph_mod._llm
+        mock_llm = MagicMock()
+        graph_mod._llm = mock_llm
+
+        try:
+            sid = sessions.create()
+            result = run(sid, "What about its unit?")
+            expected = "Which topic do you mean? Please ask a full question first, then I can follow up."
+            assert result["reply"] == expected
+            assert result["citations"] == []
+            assert result["cache_hit"] is False
+            mock_llm.invoke.assert_not_called()
+        finally:
+            graph_mod._llm = real_llm
+
+    def test_style_without_previous_answer(self, pipeline_env):
+        import app.graph as graph_mod
+        run = pipeline_env["run"]
+        sessions = pipeline_env["sessions"]
+
+        real_llm = graph_mod._llm
+        mock_llm = MagicMock()
+        graph_mod._llm = mock_llm
+
+        try:
+            sid = sessions.create()
+            result = run(sid, "Explain it more simply")
+            expected = "Ask me a question first, then I can explain it more simply."
+            assert result["reply"] == expected
+            assert result["citations"] == []
+            assert result["cache_hit"] is False
+            mock_llm.invoke.assert_not_called()
+        finally:
+            graph_mod._llm = real_llm

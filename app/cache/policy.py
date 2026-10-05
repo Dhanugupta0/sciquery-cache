@@ -21,11 +21,8 @@ def is_greeting(text: str) -> bool:
     return len(words) <= 4 and bool(words & _GREETING_WORDS)
 
 
-def is_style_request(text: str, has_previous_answer: bool = True) -> bool:
-    """A message is STYLE only if there is a previous answer AND no real topic words remain."""
-    if not has_previous_answer:
-        return False
-
+def matches_style_pattern(text: str) -> bool:
+    """Check if message matches style request pattern: has style words and zero topic words."""
     words = normalize(text).split()
     if not words:
         return False
@@ -37,6 +34,13 @@ def is_style_request(text: str, has_previous_answer: bool = True) -> bool:
     # Must have no real topic words after removing stopwords and style words
     topic_words = [w for w in words if w not in STOPWORDS and w not in STYLE_WORDS]
     return len(topic_words) == 0
+
+
+def is_style_request(text: str, has_previous_answer: bool = True) -> bool:
+    """A message is STYLE only if there is a previous answer AND no real topic words remain."""
+    if not has_previous_answer:
+        return False
+    return matches_style_pattern(text)
 
 
 _NUMERIC_TRIGGERS = ("calculate", "compute")

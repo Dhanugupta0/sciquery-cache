@@ -45,18 +45,23 @@ cp .env.example .env
 # Edit .env with your Groq API key
 ```
 
-Required environment variables:
+Required environment variables (5 secrets + optional backend URL):
 
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://api.groq.com/openai/v1` |
-| `LLM_API_KEY` | API key | `gsk_...` |
-| `LLM_MODEL` | Active LLM model | `qwen/qwen3.8-27b` |
+| `LLM_API_KEY` | Groq API key | `gsk_...` |
+| `LLM_MODEL` | General doubt-solving LLM model | `qwen/qwen3.8-27b` |
+| `LLM_NUMERIC_MODEL` | Specialized numerical step-by-step model | `openai/gpt-oss-120b` |
+| `LLM_FALLBACK_MODEL` | Fast failover model on 429 rate limits | `openai/gpt-oss-20b` |
 | `API_URL` | (Optional) Backend URL. If unset, Streamlit starts the backend itself | `http://localhost:8000` |
 
 ### 3. Build the Book Index (Already committed in `data/index/`)
 
+Note: Ingestion requires `pymupdf`, which is included in `requirements-dev.txt`:
+
 ```bash
+pip install -r requirements-dev.txt
 python scripts/ingest.py
 ```
 
