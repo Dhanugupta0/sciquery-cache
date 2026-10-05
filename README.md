@@ -67,6 +67,21 @@ flowchart LR
 
 ---
 
+## 🛠️ Tech Stack
+
+| Layer | Technologies |
+| :--- | :--- |
+| **Frontend** | Streamlit |
+| **Backend & API** | FastAPI, Uvicorn, Pydantic v2, HTTPX |
+| **Orchestration** | LangGraph, LangChain Core |
+| **LLMs & Inference** | Groq Cloud API (`qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `openai/gpt-oss-20b`) |
+| **Embeddings & Vector Search** | `BAAI/bge-small-en-v1.5` (HuggingFace), FAISS (CPU) |
+| **Caching & Storage** | SQLite3 (exact hash), FAISS (semantic vector cache) |
+| **Document Ingestion** | PyMuPDF (`fitz`) |
+| **Testing & Quality** | Pytest, Asyncio |
+
+---
+
 ## ⏱️ Measured Latency Benchmarks
 
 | Request Path | Store Latency | End-to-End API Latency |
