@@ -12,12 +12,16 @@ import streamlit as st
 API_URL = os.getenv("API_URL", "").rstrip("/")
 
 
-# ---- embedded backend ----
+# ---- backend server ----
 
 @st.cache_resource
-def start_embedded_backend() -> str:
-    """Start FastAPI in a background thread if API_URL is not set.
-    Returns the base URL to use."""
+def start_backend() -> str:
+    """Start FastAPI in a background thread and return its base URL.
+
+    This is the default mode — used on Streamlit Cloud and local dev.
+    All Streamlit ↔ backend communication goes through HTTP.
+    Set API_URL env var only if you want to point at an external server.
+    """
     if API_URL:
         return API_URL
 
@@ -95,7 +99,7 @@ st.markdown("""
 
 # ---- init ----
 
-base_url = start_embedded_backend()
+base_url = start_backend()
 
 # Session state
 if "session_id" not in st.session_state:
@@ -131,12 +135,14 @@ for msg in st.session_state.messages:
         if msg["role"] == "assistant" and "meta" in msg:
             meta = msg["meta"]
             citations = ", ".join(meta.get("citations", [])) or "—"
+            pages = meta.get("pages", [])
+            pages_str = f' (pp. {", ".join(str(p) for p in pages)})' if pages else ""
             cache_class = "cache-hit" if meta.get("cache_hit") else "cache-miss"
             cache_label = "✅ Cache hit" if meta.get("cache_hit") else "🔄 Fresh answer"
             latency = meta.get("latency_ms", 0)
             st.markdown(
                 f'<div class="meta-info">'
-                f'📖 {citations} &nbsp;|&nbsp; '
+                f'📖 {citations}{pages_str} &nbsp;|&nbsp; '
                 f'<span class="{cache_class}">{cache_label}</span> &nbsp;|&nbsp; '
                 f'⏱️ {latency:.0f} ms'
                 f'</div>',
@@ -162,22 +168,25 @@ if prompt := st.chat_input("Ask a question from NCERT Class 10 Science..."):
                 reply = data["reply"]
                 meta = {
                     "citations": data.get("citations", []),
+                    "pages": data.get("pages", []),
                     "cache_hit": data.get("cache_hit", False),
                     "latency_ms": data.get("latency_ms", 0),
                 }
             except Exception as e:
                 reply = f"Error: {e}"
-                meta = {"citations": [], "cache_hit": False, "latency_ms": 0}
+                meta = {"citations": [], "pages": [], "cache_hit": False, "latency_ms": 0}
 
         st.markdown(reply)
 
         citations = ", ".join(meta.get("citations", [])) or "—"
+        pages = meta.get("pages", [])
+        pages_str = f' (pp. {", ".join(str(p) for p in pages)})' if pages else ""
         cache_class = "cache-hit" if meta.get("cache_hit") else "cache-miss"
         cache_label = "✅ Cache hit" if meta.get("cache_hit") else "🔄 Fresh answer"
         latency = meta.get("latency_ms", 0)
         st.markdown(
             f'<div class="meta-info">'
-            f'📖 {citations} &nbsp;|&nbsp; '
+            f'📖 {citations}{pages_str} &nbsp;|&nbsp; '
             f'<span class="{cache_class}">{cache_label}</span> &nbsp;|&nbsp; '
             f'⏱️ {latency:.0f} ms'
             f'</div>',

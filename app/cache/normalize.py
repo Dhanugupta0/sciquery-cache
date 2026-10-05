@@ -30,14 +30,14 @@ def contextual_key(prev_standalone: str, followup: str) -> str:
 # ---- number extraction ----
 
 _NUMBER_PATTERN = re.compile(
-    r"(\d+\.?\d*)\s*(cm|mm|m|km|kg|g|mg|ohm|ω|v|a|w|hz|"
+    r"(\d+\.?\d*)\s*(f\d*|cm|mm|m|km|kg|g|mg|ohm|ω|v|a|w|hz|"
     r"dioptre|d|mol|l|ml|s|sec|min|°c|°f|k|n|pa|j|cal|ev|"
     r"%|percent)?\b",
     re.IGNORECASE,
 )
 
 def extract_numbers(text: str) -> set[str]:
-    """Extract number+unit pairs. Returns e.g. {'20cm', '30', '15ohm'}."""
+    """Extract number+unit pairs. Returns e.g. {'20cm', '30', '15ohm', '2f', '2f1'}."""
     text_lower = text.lower()
     results = set()
     for m in _NUMBER_PATTERN.finditer(text_lower):
@@ -45,6 +45,19 @@ def extract_numbers(text: str) -> set[str]:
         unit = (m.group(2) or "").strip()
         results.add(f"{num}{unit}")
     return results
+
+
+def extract_symbols(text: str) -> set[str]:
+    """Extract tokens that contain a digit, or are a single letter (except 'a' and 'i')."""
+    words = normalize(text).split()
+    symbols = set()
+    for w in words:
+        if any(c.isdigit() for c in w):
+            symbols.add(w)
+        elif len(w) == 1 and w.isalpha() and w not in ("a", "i"):
+            symbols.add(w)
+    return symbols
+
 
 
 # ---- stopwords and synonyms ----
@@ -65,6 +78,7 @@ STOPWORDS = {
     "each", "every", "any", "all", "both", "other", "another",
     "there", "here", "own", "same", "different", "new", "old",
     "well", "still", "even", "only", "like", "really", "actually",
+    "please", "say",
 }
 
 # Synonym map: all map to a canonical form

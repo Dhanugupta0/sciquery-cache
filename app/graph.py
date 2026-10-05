@@ -45,6 +45,7 @@ class PipelineState(TypedDict, total=False):
     answer: str
     used_chapters: list[str]
     citations: list[str]
+    pages: list[int]
     # Output
     reply: str
     latency_ms: float
@@ -61,8 +62,11 @@ def classify_message(state: PipelineState) -> PipelineState:
     msg = state["message"].strip()
     lower = msg.lower()
 
+    session = _sessions.get(state["session_id"])
+    has_prev_answer = bool(session and session.get("last_answer"))
+
     # Check for style request first
-    if is_style_request(msg):
+    if is_style_request(msg, has_previous_answer=has_prev_answer):
         state["msg_type"] = "STYLE"
         log.info("Classified as STYLE")
         return state
@@ -114,6 +118,7 @@ def cache_lookup(state: PipelineState) -> PipelineState:
         state["cache_reason"] = reason
         state["cached_answer"] = entry["answer"]
         state["cached_citations"] = entry["citations"]
+        state["cached_pages"] = entry.get("pages", [])
         log.info(f"Cache: {reason}")
     else:
         state["cache_hit"] = False
@@ -121,6 +126,21 @@ def cache_lookup(state: PipelineState) -> PipelineState:
         log.info(f"Cache: {reason}")
 
     return state
+
+
+def _invoke_llm(messages: list[dict], max_retries: int = 1):
+    """Invoke the LLM, retrying once on 429 rate limit."""
+    for attempt in range(max_retries + 1):
+        try:
+            return _llm.invoke(messages)
+        except Exception as e:
+            err_str = str(e).lower()
+            is_429 = "429" in err_str or "rate limit" in err_str or getattr(e, "status_code", None) == 429
+            if is_429 and attempt < max_retries:
+                log.warning("Rate limit (429) hit, retrying in 1s...")
+                time.sleep(1.0)
+                continue
+            raise
 
 
 # ---- rewrite (follow-up only) ----
@@ -142,7 +162,7 @@ def rewrite_question(state: PipelineState) -> PipelineState:
         {"role": "user", "content": REWRITE_HUMAN.format(message=state["message"])},
     ]
 
-    response = _llm.invoke(messages)
+    response = _invoke_llm(messages)
     standalone = response.content.strip().strip('"')
     state["standalone_question"] = standalone
     log.info(f"Rewritten: '{state['message']}' → '{standalone}'")
@@ -204,7 +224,7 @@ def generate(state: PipelineState) -> PipelineState:
         {"role": "user", "content": ANSWER_HUMAN.format(question=question)},
     ]
 
-    response = _llm.invoke(messages)
+    response = _invoke_llm(messages)
     raw = response.content.strip()
 
     # Parse JSON response
@@ -246,7 +266,7 @@ def _generate_style(state: PipelineState) -> PipelineState:
         {"role": "user", "content": STYLE_HUMAN.format(request=state["message"])},
     ]
 
-    response = _llm.invoke(messages)
+    response = _invoke_llm(messages)
     state["answer"] = response.content.strip()
     state["citations"] = prev_citations
     state["used_chapters"] = prev_citations
@@ -257,8 +277,15 @@ def _generate_style(state: PipelineState) -> PipelineState:
 # ---- validate ----
 
 def validate(state: PipelineState) -> PipelineState:
-    """Ensure used_chapters are actually from retrieved docs."""
+    """Ensure used_chapters are actually from retrieved docs.
+    Citations = chapter names only. Pages = page numbers from matching docs."""
     if state["msg_type"] == "STYLE":
+        return state
+
+    # On out-of-scope decline, return empty citations and pages
+    if not state.get("in_scope", True):
+        state["citations"] = []
+        state["pages"] = []
         return state
 
     docs = state.get("retrieved_docs", [])
@@ -270,7 +297,12 @@ def validate(state: PipelineState) -> PipelineState:
     if not valid and docs:
         valid = [docs[0]["chapter"]]
 
+    # Collect page numbers from docs matching cited chapters
+    valid_set = set(valid)
+    pages = sorted({d["page"] for d in docs if d["chapter"] in valid_set})
+
     state["citations"] = valid
+    state["pages"] = pages
     return state
 
 
@@ -299,7 +331,8 @@ def maybe_store(state: PipelineState) -> PipelineState:
             if prev:
                 ctx_key = contextual_key(prev, state["message"])
 
-        _cache.store(question, answer, citations, ctx_key=ctx_key)
+        _cache.store(question, answer, citations,
+                     pages=state.get("pages", []), ctx_key=ctx_key)
         log.info(f"Stored in cache: {question[:60]}...")
     else:
         log.info(f"Not cached: {reason}")
@@ -314,9 +347,10 @@ def finalize(state: PipelineState) -> PipelineState:
     if state.get("cache_hit"):
         state["reply"] = state["cached_answer"]
         state["citations"] = state.get("cached_citations", [])
+        state["pages"] = state.get("cached_pages", [])
     else:
         state["reply"] = state.get("answer", "Something went wrong. Please try again.")
-        # citations already set
+        # citations and pages already set by validate()
 
     elapsed = time.perf_counter() - state["start_time"]
     state["latency_ms"] = round(elapsed * 1000, 1)

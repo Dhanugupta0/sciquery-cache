@@ -5,7 +5,10 @@ ALL guards must pass for a cache hit. If ANY fails → MISS.
 """
 
 import re
-from app.cache.normalize import extract_numbers, extract_key_terms, detect_question_type
+from app.cache.normalize import (
+    normalize, SYNONYM_MAP, extract_numbers,
+    extract_symbols, extract_key_terms, detect_question_type,
+)
 from app.config import CACHE_JACCARD_THRESHOLD
 
 
@@ -59,15 +62,33 @@ CONTRAST_GROUPS = [
     {"tropic", "nastic"},
     {"sympathetic", "parasympathetic"},
     {"cerebrum", "cerebellum", "medulla"},
+    {"left", "right"},
+    {"resistance", "resistivity"},
+    {
+        "beyond c", "at c", "between c and f", "at f",
+        "between p and f", "at infinity",
+    },
 ]
 
 
 def _mentioned_members(text_lower: str, group: set[str]) -> set[str]:
-    """Which members of a contrast group appear in the text?"""
+    """Which members of a contrast group appear in the text?
+    Matches every member with an optional plural ending (s/es), so 'acids' matches 'acid'."""
     found = set()
+    norm_words = [SYNONYM_MAP.get(w, w) for w in normalize(text_lower).split()]
+    norm_text = " " + " ".join(norm_words) + " "
+
     for member in group:
-        # Use word boundary to avoid partial matches
-        if re.search(r"\b" + re.escape(member) + r"\b", text_lower):
+        if member.endswith("es"):
+            pattern = r"\b(?:" + re.escape(member) + r"|" + re.escape(member[:-2]) + r"(?:e?s)?)\b"
+        elif member.endswith("s"):
+            pattern = r"\b(?:" + re.escape(member) + r"|" + re.escape(member[:-1]) + r"(?:e?s)?)\b"
+        else:
+            pattern = r"\b" + re.escape(member) + r"(?:e?s)?\b"
+
+        if re.search(pattern, text_lower):
+            found.add(member)
+        elif f" {member} " in norm_text:
             found.add(member)
     return found
 
@@ -81,6 +102,15 @@ def number_guard(q1: str, q2: str) -> tuple[bool, str]:
     if nums1 != nums2:
         return False, f"number guard: {nums1} vs {nums2}"
     return True, "number guard: passed"
+
+
+def symbol_guard(q1: str, q2: str) -> tuple[bool, str]:
+    """Tokens that contain a digit, or are a single letter (except 'a' and 'i'), must be identical."""
+    s1 = extract_symbols(q1)
+    s2 = extract_symbols(q2)
+    if s1 != s2:
+        return False, f"symbol guard: {s1} vs {s2}"
+    return True, "symbol guard: passed"
 
 
 def contrast_guard(q1: str, q2: str) -> tuple[bool, str]:
@@ -119,8 +149,8 @@ def question_type_guard(q1: str, q2: str) -> tuple[bool, str]:
 
 
 def run_all_guards(q1: str, q2: str) -> tuple[bool, str]:
-    """Run all four guards. Returns (all_passed, combined_reason)."""
-    guards = [number_guard, contrast_guard, key_term_guard, question_type_guard]
+    """Run all safety guards. Returns (all_passed, combined_reason)."""
+    guards = [number_guard, symbol_guard, contrast_guard, key_term_guard, question_type_guard]
     reasons = []
     for guard in guards:
         passed, reason = guard(q1, q2)

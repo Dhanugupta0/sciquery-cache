@@ -34,8 +34,13 @@ Respond in this exact JSON format (no markdown, no extra text):
 
 ANSWER_HUMAN = "{question}"
 
-REWRITE_SYSTEM = """Rewrite the follow-up message into a standalone question using the conversation history.
-Output ONLY the rewritten question, nothing else.
+REWRITE_SYSTEM = """You are a question rewriter.
+Given the conversation history, rewrite the user message into a standalone question.
+
+RULES:
+- If the user message is already a self-contained question that does not depend on the previous conversation, return it UNCHANGED.
+- Only resolve pronouns (it, its, this, that, etc.) or ellipsis that refer to the previous conversation.
+- Output ONLY the standalone question, nothing else.
 
 Conversation history (most recent last):
 {history}"""

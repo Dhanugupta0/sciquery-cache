@@ -52,8 +52,12 @@ Guards run in order: number → contrast → key-term → type. Fail-fast design
 
 ## Performance Numbers
 
-- **Cache hit latency**: 0.1–0.2 ms (target < 500 ms, aim < 150 ms) ✅
-- **Embedding model load**: ~2s first time (cached after)
+- **Exact-hit latency (store lookup)**: 0.08 ms median
+- **Exact-hit latency (end-to-end API)**: 4.59 ms median
+- **Semantic-hit latency (store lookup + guards)**: 5.79 ms median
+- **Semantic-hit latency (end-to-end API)**: 10.73 ms median
+- **Fresh LLM generation (uncontended)**: 613.96 ms median (386 ms – 1739 ms range)
+- **Embedding model load**: ~1.5s first time (cached after in memory)
 - **FAISS index**: 734 chunks, 384-dimensional, ~1.1 MB
 - **Ingestion**: 13 chapters, 734 chunks, ~10s including embedding
 

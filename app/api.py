@@ -68,15 +68,22 @@ def chat(req: ChatRequest):
     if sessions.get(req.session_id) is None:
         raise HTTPException(status_code=404, detail="Unknown session")
 
+    t0 = time.perf_counter()
     try:
         result = run_pipeline(req.session_id, req.message)
     except Exception as e:
+        elapsed = round((time.perf_counter() - t0) * 1000, 1)
         log.exception("Pipeline error")
+        err_str = str(e).lower()
+        if "429" in err_str or "rate limit" in err_str or getattr(e, "status_code", None) == 429:
+            msg = "Too many requests right now. Please wait a moment and try again."
+        else:
+            msg = "Sorry, something went wrong. Please try again."
         return ChatResponse(
-            reply="Sorry, something went wrong. Please try again.",
+            reply=msg,
             citations=[],
             cache_hit=False,
-            latency_ms=0,
+            latency_ms=elapsed,
         )
 
     return ChatResponse(

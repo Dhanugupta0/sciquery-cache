@@ -56,3 +56,14 @@ class TestChat:
         assert isinstance(data["citations"], list)
         assert isinstance(data["cache_hit"], bool)
         assert isinstance(data["latency_ms"], (int, float))
+
+
+class TestLLMConfig:
+    def test_llm_client_openai_compatible(self):
+        """Confirm LLM client uses an OpenAI-compatible base URL and model configuration."""
+        from app.llm import get_llm
+        from app.config import LLM_BASE_URL, LLM_MODEL
+        llm = get_llm()
+        assert str(llm.openai_api_base).rstrip("/") == LLM_BASE_URL.rstrip("/")
+        assert llm.model_name == LLM_MODEL
+

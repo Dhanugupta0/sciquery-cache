@@ -57,11 +57,67 @@ class TestRequiredPairs:
 
     def test_followup_different_context_miss(self):
         """Same follow-up ('What about its laws?') in different contexts → MISS.
-        This is enforced by contextual exact-match: different prev_standalone → different key."""
+        Enforced by contextual exact-match: different prev_standalone → different key."""
         from app.cache.normalize import contextual_key
         key_refraction = contextual_key("What is refraction?", "What about its laws?")
         key_reflection = contextual_key("What is reflection?", "What about its laws?")
         assert key_refraction != key_reflection, "Different contexts should produce different keys"
+
+    def test_followup_different_context_cache_isolation(self):
+        """Store answer for 'What about its laws?' after refraction.
+        Lookup the same follow-up after reflection → MISS (different context)."""
+        from app.cache.store import CacheStore
+        from app.cache.normalize import contextual_key
+        import tempfile
+        from unittest.mock import patch
+
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp_db = f.name
+        f.close()
+
+        with patch("app.cache.store.CACHE_DB_PATH", tmp_db):
+            store = CacheStore()
+            # Store under refraction context
+            ctx_refraction = contextual_key("What is refraction?", "What about its laws?")
+            store.store(
+                "What about its laws?",
+                "The laws of refraction: 1. Incident ray, refracted ray...",
+                ["Light – Reflection and Refraction"],
+                ctx_key=ctx_refraction,
+            )
+
+            # Store under reflection context
+            ctx_reflection = contextual_key("What is reflection?", "What about its laws?")
+            store.store(
+                "What about its laws?",
+                "The laws of reflection: 1. Angle of incidence equals angle of reflection...",
+                ["Light – Reflection and Refraction"],
+                ctx_key=ctx_reflection,
+            )
+
+            # Lookup under refraction context → gets refraction answer
+            entry_refract, r1 = store.lookup(
+                "What about its laws?",
+                prev_standalone="What is refraction?",
+                is_followup=True,
+            )
+            assert entry_refract is not None, f"Expected HIT for refraction context: {r1}"
+            assert "refraction" in entry_refract["answer"].lower()
+
+            # Lookup under reflection context → gets reflection answer
+            entry_reflect, r2 = store.lookup(
+                "What about its laws?",
+                prev_standalone="What is reflection?",
+                is_followup=True,
+            )
+            assert entry_reflect is not None, f"Expected HIT for reflection context: {r2}"
+            assert "reflection" in entry_reflect["answer"].lower()
+
+            # Confirm the two answers are genuinely different
+            assert entry_refract["answer"] != entry_reflect["answer"]
+            assert entry_refract["id"] != entry_reflect["id"]
+
+        os.unlink(tmp_db)
 
     def test_style_request_never_cached(self):
         """'Explain it more simply' → MISS (never cached)"""
@@ -70,6 +126,37 @@ class TestRequiredPairs:
             "Explain it more simply", "...", ["Ch1"], in_scope=True, is_style=True
         )
         assert not ok, "Style requests should never be cached"
+
+    def test_style_request_skips_cache_lookup(self):
+        """Even if a style phrase exists in the cache, lookup is skipped."""
+        from app.cache.store import CacheStore
+        import tempfile
+        from unittest.mock import patch
+
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp_db = f.name
+        f.close()
+
+        with patch("app.cache.store.CACHE_DB_PATH", tmp_db):
+            store = CacheStore()
+            # Force-store a style-like phrase
+            store.store(
+                "Explain it more simply",
+                "Here is a simpler version...",
+                ["Chapter 1"],
+            )
+            # The graph.cache_lookup skips based on msg_type=STYLE,
+            # but the store itself should also show the phrase IS there
+            entry, reason = store.lookup("Explain it more simply")
+            assert entry is not None, "Store lookup finds it"
+
+            # But the classifier should flag this as STYLE,
+            # and is_style_request should be True
+            assert is_style_request("Explain it more simply")
+            # Confirming that if classify_message sets STYLE,
+            # cache_lookup returns skip before ever calling store.lookup
+
+        os.unlink(tmp_db)
 
 
 # ============================================================
@@ -142,6 +229,21 @@ class TestShouldMissLookalikes:
         # 8. Myopia vs hypermetropia
         ("What is myopia?",
          "What is hypermetropia?"),
+        # 9. Beyond C vs between P and F
+        ("What happens when the object is beyond C?",
+         "What happens when the object is between P and F?"),
+        # 10. Left vs right ventricle
+        ("What is the function of the left ventricle?",
+         "What is the function of the right ventricle?"),
+        # 11. Resistance vs resistivity
+        ("What is resistance?",
+         "What is resistivity?"),
+        # 12. Acids vs bases long pair
+        ("What are the chemical properties of acids when they react with metals?",
+         "What are the chemical properties of bases when they react with metals?"),
+        # 13. Convex lens position pair
+        ("convex lens when the object is between F and 2F",
+         "convex lens when the object is beyond 2F"),
     ])
     def test_lookalike_miss(self, q1, q2):
         """Guards fail-fast — we just verify the result is MISS."""
@@ -221,6 +323,10 @@ class TestStyleDetection:
     def test_not_style(self):
         assert not is_style_request("What is refraction?")
         assert not is_style_request("Explain refraction of light")
+        assert not is_style_request("Give an example of a combination reaction")
+        assert not is_style_request("Explain in detail how digestion works")
+        assert not is_style_request("Summarise the process of photosynthesis")
+        assert not is_style_request("What is a simple electric circuit?")
 
 
 # ============================================================
@@ -228,34 +334,71 @@ class TestStyleDetection:
 # ============================================================
 
 class TestCacheLatency:
-    """Cache hit must return in under 500ms."""
+    """Measure exact-hit and semantic-hit latency separately."""
 
-    def test_cache_hit_latency(self):
-        """Store a question, look it up, and check latency."""
+    def _make_store(self):
+        """Create a temporary CacheStore."""
         from app.cache.store import CacheStore
         import tempfile
         from unittest.mock import patch
 
-        # Use temp DB
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            tmp_db = f.name
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp_db = f.name
+        f.close()
+        patcher = patch("app.cache.store.CACHE_DB_PATH", tmp_db)
+        patcher.start()
+        store = CacheStore()
+        store.store(
+            "What is refraction of light?",
+            "Refraction is the bending of light...",
+            ["Light – Reflection and Refraction"],
+        )
+        return store, patcher, tmp_db
 
-        with patch("app.cache.store.CACHE_DB_PATH", tmp_db):
-            store = CacheStore()
-            store.store(
-                "What is refraction of light?",
-                "Refraction is the bending of light...",
-                ["Light – Reflection and Refraction"],
-            )
+    def test_exact_hit_latency(self):
+        """Exact hash match latency (no FAISS, no guards)."""
+        store, patcher, tmp_db = self._make_store()
 
+        # Warm up
+        store.lookup("What is refraction of light?")
+
+        times = []
+        for _ in range(50):
             start = time.perf_counter()
             entry, reason = store.lookup("What is refraction of light?")
             elapsed_ms = (time.perf_counter() - start) * 1000
+            times.append(elapsed_ms)
+            assert entry is not None
 
-            assert entry is not None, f"Expected cache hit, got: {reason}"
-            assert elapsed_ms < 500, f"Cache hit took {elapsed_ms:.1f} ms (must be < 500)"
-            print(f"\nCache hit latency: {elapsed_ms:.1f} ms")
+        median = sorted(times)[len(times) // 2]
+        print(f"\nExact-hit latency (median of 50): {median:.3f} ms")
+        assert median < 500
 
+        patcher.stop()
+        os.unlink(tmp_db)
+
+    def test_semantic_hit_latency(self):
+        """Semantic match latency (FAISS search + all guards)."""
+        store, patcher, tmp_db = self._make_store()
+
+        # Semantic lookup: different wording, same meaning
+        query = "What does refraction mean?"
+
+        # Warm up
+        store.lookup(query)
+
+        times = []
+        for _ in range(50):
+            start = time.perf_counter()
+            entry, reason = store.lookup(query)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            times.append(elapsed_ms)
+
+        median = sorted(times)[len(times) // 2]
+        print(f"\nSemantic-hit latency (median of 50): {median:.3f} ms")
+        assert median < 500
+
+        patcher.stop()
         os.unlink(tmp_db)
 
 

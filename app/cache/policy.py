@@ -1,15 +1,18 @@
 """Cache policy — decides what to cache and what to never cache."""
 
-from app.cache.normalize import extract_numbers
+from app.cache.normalize import normalize, STOPWORDS, extract_numbers
 
 
 # ---- patterns we never cache ----
 
 _GREETING_WORDS = {"hi", "hello", "hey", "thanks", "thank", "bye", "goodbye", "ok", "okay"}
 
-_STYLE_WORDS = {
-    "simpler", "shorter", "longer", "again", "points", "bullet",
-    "example", "examples", "detail", "briefly", "simple",
+STYLE_WORDS = {
+    "simpler", "simply", "simple", "shorter", "short", "longer", "long",
+    "again", "repeat", "points", "bullet", "bullets",
+    "example", "examples", "detail", "details", "briefly", "brief",
+    "summarize", "summarise", "summary", "elaborate", "more", "less",
+    "easy", "easier",
 }
 
 
@@ -18,25 +21,22 @@ def is_greeting(text: str) -> bool:
     return len(words) <= 4 and bool(words & _GREETING_WORDS)
 
 
-def is_style_request(text: str) -> bool:
-    """Check if the message is purely a style/format change request."""
-    lower = text.lower().strip()
-    # Direct style phrases
-    style_phrases = [
-        "explain it more simply", "explain more simply", "make it simpler",
-        "in points", "in bullet points", "give an example", "give examples",
-        "say that again", "repeat", "shorter", "make it shorter",
-        "elaborate", "more detail", "explain in detail",
-        "summarize", "summarise",
-    ]
-    for phrase in style_phrases:
-        if phrase in lower:
-            return True
-    # Very short + style word
-    words = lower.split()
-    if len(words) <= 5 and any(w in _STYLE_WORDS for w in words):
-        return True
-    return False
+def is_style_request(text: str, has_previous_answer: bool = True) -> bool:
+    """A message is STYLE only if there is a previous answer AND no real topic words remain."""
+    if not has_previous_answer:
+        return False
+
+    words = normalize(text).split()
+    if not words:
+        return False
+
+    # Must contain at least one style word
+    if not any(w in STYLE_WORDS for w in words):
+        return False
+
+    # Must have no real topic words after removing stopwords and style words
+    topic_words = [w for w in words if w not in STOPWORDS and w not in STYLE_WORDS]
+    return len(topic_words) == 0
 
 
 def should_cache(question: str, answer: str, citations: list[str],
