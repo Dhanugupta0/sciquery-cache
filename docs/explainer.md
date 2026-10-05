@@ -10,9 +10,10 @@
 5. **Generation**: The LLM answers strictly using retrieved context and provides chapter-level citations.
 
 ### 2. How the Cache Works
-The cache sits before retrieval and LLM stages to deliver near-zero latency answers safely:
-- **Exact Hash Match**: Normalized queries (lowercased, punctuation-stripped) perform an instant SQLite lookup (~0.08 ms).
-- **Semantic Candidate Retrieval**: Queries without numbers query a FAISS cache vector index (cosine similarity threshold ≥ 0.88).
+The cache sits before retrieval and LLM stages to deliver safe answers at ultra-low latency:
+- **Latency Profile**: Exact hit ~5 ms end to end (0.08 ms store), semantic hit ~11 ms (5.8 ms store), fresh answer about 0.4 to 2 s normally and up to ~10 s when rate-limited.
+- **Exact Hash Match**: Normalized queries perform an instant SQLite lookup.
+- **Semantic Candidate Retrieval**: Queries without numbers search a FAISS vector index (cosine similarity ≥ 0.88).
 - **Five Multi-Stage Safety Guards**:
   - *Number Guard*: Ensures numeric values and units match identically.
   - *Symbol Guard*: Enforces exact matching of single letters (e.g., optical points `C`, `F`, `P`) and alphanumeric symbols (`2f`, `2f1`).

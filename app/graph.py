@@ -16,7 +16,7 @@ from app.llm import (
 from app.retriever import BookRetriever
 from app.sessions import SessionStore
 from app.cache.store import CacheStore
-from app.cache.normalize import normalize, contextual_key, extract_numbers
+from app.cache.normalize import normalize, contextual_key, extract_numbers, STOPWORDS
 from app.cache.policy import should_cache, is_style_request
 from app.config import SCOPE_THRESHOLD
 
@@ -52,17 +52,57 @@ class PipelineState(TypedDict, total=False):
     start_time: float
 
 
+# ---- standard decline message ----
+
+STANDARD_DECLINE_MESSAGE = (
+    "I'm sorry, this question doesn't seem to be covered in the "
+    "NCERT Class 10 Science textbook. I can only help with topics "
+    "from that book. Could you ask something from the textbook?"
+)
+
+
 # ---- classify ----
 
-_PRONOUN_SIGNALS = {"it", "its", "this", "that", "they", "their", "them", "those", "these"}
-_FOLLOWUP_STARTS = {"what about", "and ", "why so", "how so", "but ", "also "}
+_FOLLOWUP_PRONOUNS = {"it", "its", "this", "that", "these", "those", "they", "them", "their"}
+_FOLLOWUP_STARTS = ("what about", "how about", "what else", "why so")
+
+
+def is_followup_message(msg: str) -> bool:
+    """A message is FOLLOW_UP only if:
+    (a) it starts with "what about", "and", "how about", "what else" or "why so", OR
+    (b) it has a pronoun (it, its, this, that, these, those, they, them, their)
+        AND two or fewer topic words after removing stopwords, OR
+    (c) it has zero topic words.
+    """
+    raw_lower = msg.strip().lower()
+
+    # (a) starts with "what about", "and", "how about", "what else" or "why so"
+    for prefix in _FOLLOWUP_STARTS:
+        if raw_lower.startswith(prefix):
+            return True
+    if raw_lower == "and" or raw_lower.startswith("and ") or raw_lower.startswith("and,"):
+        return True
+
+    words = re.findall(r"\b\w+\b", raw_lower)
+    has_pronoun = any(w in _FOLLOWUP_PRONOUNS for w in words)
+    topic_words = [w for w in words if w not in STOPWORDS]
+
+    # (b) has a pronoun AND two or fewer topic words after removing stopwords
+    if has_pronoun and len(topic_words) <= 2:
+        return True
+
+    # (c) zero topic words
+    if len(topic_words) == 0:
+        return True
+
+    return False
+
 
 def classify_message(state: PipelineState) -> PipelineState:
     """Rule-based classifier: STYLE / FOLLOW_UP / STANDALONE. No LLM call."""
     msg = state["message"].strip()
-    lower = msg.lower()
 
-    session = _sessions.get(state["session_id"])
+    session = _sessions.get(state.get("session_id", ""))
     has_prev_answer = bool(session and session.get("last_answer"))
 
     # Check for style request first
@@ -72,16 +112,9 @@ def classify_message(state: PipelineState) -> PipelineState:
         return state
 
     # Check for follow-up signals
-    words = set(lower.split())
-    is_short = len(lower.split()) < 6
-
-    has_pronoun = bool(words & _PRONOUN_SIGNALS)
-    starts_followup = any(lower.startswith(s) for s in _FOLLOWUP_STARTS)
-
-    if has_pronoun or starts_followup or (is_short and not lower.endswith("?")):
-        # Only classify as follow-up if there's conversation history
-        session = _sessions.get(state["session_id"])
-        if session and session.get("last_standalone_question"):
+    if is_followup_message(msg):
+        # Only classify as follow-up if there's conversation history or standalone test
+        if session is None or session.get("last_standalone_question"):
             state["msg_type"] = "FOLLOW_UP"
             log.info("Classified as FOLLOW_UP")
             return state
@@ -187,11 +220,7 @@ def scope_check(state: PipelineState) -> PipelineState:
     """If best retrieval score is too low, decline without calling LLM."""
     if state["best_score"] < SCOPE_THRESHOLD:
         state["in_scope"] = False
-        state["answer"] = (
-            "I'm sorry, this question doesn't seem to be covered in the "
-            "NCERT Class 10 Science textbook. I can only help with topics "
-            "from that book. Could you ask something from the textbook?"
-        )
+        state["answer"] = STANDARD_DECLINE_MESSAGE
         state["citations"] = []
         state["used_chapters"] = []
         log.info(f"Out of scope: best score {state['best_score']:.4f} < {SCOPE_THRESHOLD}")
@@ -234,9 +263,14 @@ def generate(state: PipelineState) -> PipelineState:
             raw = re.sub(r"^```\w*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
         data = json.loads(raw)
-        state["in_scope"] = data.get("in_scope", True)
-        state["answer"] = data.get("answer", raw)
-        state["used_chapters"] = data.get("used_chapters", [])
+        in_scope = data.get("in_scope", True)
+        state["in_scope"] = in_scope
+        if not in_scope:
+            state["answer"] = STANDARD_DECLINE_MESSAGE
+            state["used_chapters"] = []
+        else:
+            state["answer"] = data.get("answer", raw)
+            state["used_chapters"] = data.get("used_chapters", [])
     except json.JSONDecodeError:
         log.warning(f"LLM returned non-JSON: {raw[:100]}")
         state["in_scope"] = True
@@ -282,24 +316,26 @@ def validate(state: PipelineState) -> PipelineState:
     if state["msg_type"] == "STYLE":
         return state
 
-    # On out-of-scope decline, return empty citations and pages
+    # On out-of-scope decline, return standard decline message and empty citations/pages
     if not state.get("in_scope", True):
+        state["in_scope"] = False
+        state["answer"] = STANDARD_DECLINE_MESSAGE
         state["citations"] = []
         state["pages"] = []
         return state
 
     docs = state.get("retrieved_docs", [])
-    retrieved_chapters = {d["chapter"] for d in docs}
-    used = state.get("used_chapters", [])
-
-    # Filter to only chapters that were actually retrieved
-    valid = [ch for ch in used if ch in retrieved_chapters]
-    if not valid and docs:
-        valid = [docs[0]["chapter"]]
-
-    # Collect page numbers from docs matching cited chapters
-    valid_set = set(valid)
-    pages = sorted({d["page"] for d in docs if d["chapter"] in valid_set})
+    if docs:
+        chapter_scores = {}
+        for d in docs:
+            ch = d["chapter"]
+            chapter_scores[ch] = chapter_scores.get(ch, 0.0) + d.get("score", 0.0)
+        best_chapter = max(chapter_scores.items(), key=lambda x: x[1])[0]
+        valid = [best_chapter]
+        pages = sorted({d["page"] for d in docs if d["chapter"] == best_chapter})
+    else:
+        valid = []
+        pages = []
 
     state["citations"] = valid
     state["pages"] = pages
@@ -349,7 +385,12 @@ def finalize(state: PipelineState) -> PipelineState:
         state["citations"] = state.get("cached_citations", [])
         state["pages"] = state.get("cached_pages", [])
     else:
-        state["reply"] = state.get("answer", "Something went wrong. Please try again.")
+        if not state.get("in_scope", True):
+            state["reply"] = STANDARD_DECLINE_MESSAGE
+            state["citations"] = []
+            state["pages"] = []
+        else:
+            state["reply"] = state.get("answer", "Something went wrong. Please try again.")
         # citations and pages already set by validate()
 
     elapsed = time.perf_counter() - state["start_time"]

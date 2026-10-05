@@ -48,7 +48,7 @@ Too strict for short questions. Adding one word drops Jaccard from 1.0 to 0.67 i
 Words like "good", "important", "living" were treated as content words, causing key-term mismatches for valid paraphrases ("good conductors" vs "conduct"). Expanded stopwords and added synonym mappings (conductors→conductor, living→life).
 
 ### 4. Single-pass guard ordering
-Guards run in order: number → contrast → key-term → type. Fail-fast design. Initially tests asserted on WHICH guard caught the mismatch, but since guards run in sequence, the first failure depends on the specific pair. Changed tests to only assert MISS, not the specific guard.
+Guards run in order: number → symbol → contrast → key-term → type (5 safety guards). Fail-fast design. Initially tests asserted on WHICH guard caught the mismatch, but since guards run in sequence, the first failure depends on the specific pair. Changed tests to only assert MISS, not the specific guard.
 
 ## Performance Numbers
 

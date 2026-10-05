@@ -173,3 +173,43 @@ class TestMultiTurnFollowUp:
             assert "Electricity" in result2["citations"]
         finally:
             graph_mod._llm = real_llm
+
+
+class TestFollowUpClassification:
+    """Test follow-up vs standalone classification rules."""
+
+    @pytest.mark.parametrize("msg", [
+        "Function of the right ventricle",
+        "SI unit of resistivity",
+        "veins and arteries difference",
+        "What are the chemical properties of bases when they react with metals?",
+        "Why does iron lose its shine in air?",
+    ])
+    def test_standalone_messages(self, pipeline_env, msg):
+        from app.graph import classify_message, is_followup_message
+        sessions = pipeline_env["sessions"]
+        sid = sessions.create()
+        sessions.set_last_standalone(sid, "What is refraction?")
+        sessions.set_last_answer(sid, "Refraction is bending of light.", ["Light – Reflection and Refraction"])
+
+        assert not is_followup_message(msg)
+        state = {"session_id": sid, "message": msg}
+        res = classify_message(state)
+        assert res["msg_type"] == "STANDALONE"
+
+    @pytest.mark.parametrize("msg", [
+        "What about its laws?",
+        "What is its unit?",
+        "Why so?",
+    ])
+    def test_followup_messages(self, pipeline_env, msg):
+        from app.graph import classify_message, is_followup_message
+        sessions = pipeline_env["sessions"]
+        sid = sessions.create()
+        sessions.set_last_standalone(sid, "What is Ohm's law?")
+        sessions.set_last_answer(sid, "Ohm's law states V=IR.", ["Electricity"])
+
+        assert is_followup_message(msg)
+        state = {"session_id": sid, "message": msg}
+        res = classify_message(state)
+        assert res["msg_type"] == "FOLLOW_UP"

@@ -22,7 +22,7 @@ PDF_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "pdfs")
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 # --- Retriever ---
-RETRIEVAL_TOP_K = 4
+RETRIEVAL_TOP_K = 6
 # Minimum cosine similarity for retrieved chunks to be considered relevant.
 # Below this → out-of-scope decline, no LLM call.
 SCOPE_THRESHOLD = 0.50

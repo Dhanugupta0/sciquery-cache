@@ -16,15 +16,15 @@ A doubt-solving chatbot for the NCERT Class 10 Science textbook, featuring a mul
 - Multi-turn conversation handling with autonomous follow-up rewriting
 - Style detection ("explain simpler", "in points") to restyle without caching
 - Zero-LLM out-of-scope question rejection with empty citations
-- Measured sub-millisecond store-level exact cache hits
+- Ultra-low latency exact hits (~5 ms end-to-end)
 
 ## Latency Benchmarks (Measured)
 
 | Path | Store Latency | End-to-End API Latency |
 |------|---------------|------------------------|
-| **Exact Cache Hit** | 0.08 ms median | 4.59 ms median |
-| **Semantic Cache Hit** (FAISS + 5 guards) | 5.79 ms median | 10.73 ms median |
-| **Fresh LLM Generation** (uncontended) | N/A | 613.96 ms median (386 – 1739 ms) |
+| **Exact Cache Hit** | 0.08 ms median | ~5 ms end-to-end (4.59 ms median) |
+| **Semantic Cache Hit** (FAISS + 5 guards) | 5.79 ms median | ~11 ms end-to-end (10.73 ms median) |
+| **Fresh Answer (LLM)** | N/A | ~0.4 to 2 s normally (614 ms median), up to ~10 s when rate-limited |
 
 ---
 
