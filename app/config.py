@@ -12,6 +12,7 @@ load_dotenv(_PROJECT_ROOT / ".env")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")
+LLM_NUMERIC_MODEL = os.getenv("LLM_NUMERIC_MODEL", "openai/gpt-oss-120b")
 
 # --- Paths ---
 BOOK_INDEX_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "index")
@@ -25,7 +26,8 @@ EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 RETRIEVAL_TOP_K = 6
 # Minimum cosine similarity for retrieved chunks to be considered relevant.
 # Below this → out-of-scope decline, no LLM call.
-SCOPE_THRESHOLD = 0.50
+# Calibrated from real scores: in-scope min 0.6875, off-topic max 0.6397.
+SCOPE_THRESHOLD = 0.66
 
 # --- Cache ---
 CACHE_SIMILARITY_THRESHOLD = 0.88   # cosine sim for semantic cache match

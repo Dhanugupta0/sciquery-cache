@@ -39,6 +39,17 @@ def is_style_request(text: str, has_previous_answer: bool = True) -> bool:
     return len(topic_words) == 0
 
 
+_NUMERIC_TRIGGERS = ["find", "calculate", "focal length", "image distance"]
+
+
+def is_numerical_question(text: str) -> bool:
+    """Detect numerical questions: contains digits, or words like find, calculate, focal length, image distance."""
+    lower = text.lower()
+    if any(c.isdigit() for c in lower):
+        return True
+    return any(w in lower for w in _NUMERIC_TRIGGERS)
+
+
 def should_cache(question: str, answer: str, citations: list[str],
                  in_scope: bool, is_style: bool) -> tuple[bool, str]:
     """Decide if this answer should be stored in the cache.
@@ -49,6 +60,9 @@ def should_cache(question: str, answer: str, citations: list[str],
 
     if not in_scope:
         return False, "never cache: out-of-scope decline"
+
+    if is_numerical_question(question):
+        return False, "never cache: numerical question"
 
     if not answer or not answer.strip():
         return False, "never cache: empty answer"

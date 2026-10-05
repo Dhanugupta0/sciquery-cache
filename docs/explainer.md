@@ -29,7 +29,8 @@ The cache sits before retrieval and LLM stages to deliver safe answers at ultra-
 ### 4. What We NEVER Cache
 - `STYLE` modifications ("simpler", "in points", "give an example") to keep formatting dynamic.
 - Out-of-scope declines and empty responses.
-- Queries containing specific numbers or calculations (exact hash only).
+- Numerical and calculation questions (containing digits, or keywords like find, calculate, focal length, image distance) to guarantee fresh step-by-step arithmetic and avoid caching dynamic problem sets.
+- Greetings and conversational pleasantries (e.g., "hi", "hello", "thanks").
 - Transient errors or rate-limit messages.
 
 ### 5. What Did Not Work

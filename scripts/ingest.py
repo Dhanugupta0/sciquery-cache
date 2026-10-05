@@ -11,7 +11,7 @@ import sys
 import json
 import hashlib
 
-from pypdf import PdfReader
+import fitz
 from fastembed import TextEmbedding
 import numpy as np
 
@@ -34,13 +34,10 @@ def extract_toc(pdf_dir: str) -> dict[int, str]:
     if not os.path.exists(ps_path):
         sys.exit(f"TOC PDF not found: {ps_path}")
 
-    reader = PdfReader(ps_path)
+    doc = fitz.open(ps_path)
     toc = {}
-    for page in reader.pages:
-        try:
-            text = page.extract_text()
-        except Exception:
-            continue
+    for page in doc:
+        text = page.get_text()
         # Pattern: "Chapter 8 Heredity 128"
         for m in re.finditer(r"Chapter\s+(\d+)\s+(.+?)\s+\d+\s*$", text, re.MULTILINE):
             num = int(m.group(1))
@@ -52,43 +49,40 @@ def extract_toc(pdf_dir: str) -> dict[int, str]:
 # ---------- step 2: extract + clean text per chapter ----------
 
 def clean_page_text(raw: str, chapter_name: str) -> str:
-    """Remove headers, footers, page numbers, and repeated chapter headings."""
+    """Remove headers, footers, page numbers, repeated lines and bullet artifacts."""
     lines = raw.split("\n")
     cleaned = []
+    prev = ""
     for line in lines:
         stripped = line.strip()
-        # Skip empty lines
         if not stripped:
             continue
+        # Skip standalone bullet artifacts
+        if stripped in ("n", "/square6"):
+            continue
+        # Skip duplicate consecutive lines (PDF artifact)
+        if stripped == prev and (stripped.startswith("Activity") or stripped.startswith("Figure") or stripped.startswith("Table")):
+            continue
         # Skip page headers like "Science128" or "Heredity 129"
-        if re.match(r"^Science\s*\d+$", stripped):
+        if re.match(r"^Science\s*\d*$", stripped):
             continue
         if re.match(r"^" + re.escape(chapter_name) + r"\s*\d*$", stripped):
             continue
-        # Skip standalone page numbers
-        if re.match(r"^\d+$", stripped):
-            continue
-        # Skip repeated "Activity X.Y" headers (5 times due to PDF formatting)
-        if re.match(r"^(Activity \d+\.\d+){2,}", stripped):
-            continue
-        # Skip repeated "Figure X.Y" headers
-        if re.match(r"^(Figure \d+\.\d+){2,}", stripped):
+        # Skip standalone page numbers or reprint notices
+        if re.match(r"^\d+$", stripped) or stripped.startswith("Reprint 20"):
             continue
         cleaned.append(stripped)
+        prev = stripped
     return "\n".join(cleaned)
 
 
 def extract_chapter_text(pdf_path: str, chapter_name: str) -> list[dict]:
-    """Extract cleaned text from a chapter PDF.
+    """Extract cleaned text from a chapter PDF using PyMuPDF.
     Returns list of {text, page} dicts (one per page)."""
-    reader = PdfReader(pdf_path)
+    doc = fitz.open(pdf_path)
     pages = []
-    for i, page in enumerate(reader.pages):
-        try:
-            raw = page.extract_text()
-        except Exception:
-            print(f"  Warning: could not extract page {i+1} of {pdf_path}")
-            continue
+    for i, page in enumerate(doc):
+        raw = page.get_text()
         if not raw:
             continue
         text = clean_page_text(raw, chapter_name)

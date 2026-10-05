@@ -9,7 +9,8 @@ from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
 
 from app.llm import (
-    get_llm, ANSWER_SYSTEM, ANSWER_HUMAN,
+    get_llm, get_numeric_llm, ANSWER_SYSTEM, ANSWER_HUMAN,
+    NUMERIC_SYSTEM,
     REWRITE_SYSTEM, REWRITE_HUMAN,
     STYLE_SYSTEM, STYLE_HUMAN,
 )
@@ -17,7 +18,7 @@ from app.retriever import BookRetriever
 from app.sessions import SessionStore
 from app.cache.store import CacheStore
 from app.cache.normalize import normalize, contextual_key, extract_numbers, STOPWORDS
-from app.cache.policy import should_cache, is_style_request
+from app.cache.policy import should_cache, is_style_request, is_numerical_question
 from app.config import SCOPE_THRESHOLD
 
 log = logging.getLogger(__name__)
@@ -98,9 +99,26 @@ def is_followup_message(msg: str) -> bool:
     return False
 
 
+_GREETINGS = {"hi", "hello", "hii", "hey", "thanks"}
+
+
 def classify_message(state: PipelineState) -> PipelineState:
-    """Rule-based classifier: STYLE / FOLLOW_UP / STANDALONE. No LLM call."""
+    """Rule-based classifier: GREETING / STYLE / FOLLOW_UP / STANDALONE. No LLM call."""
     msg = state["message"].strip()
+
+    # Check for greeting first
+    clean_greeting = re.sub(r"[^\w\s]", "", msg.lower()).strip()
+    if clean_greeting in _GREETINGS:
+        state["msg_type"] = "GREETING"
+        greeting_text = "Hi! Ask me any doubt from the NCERT Class 10 Science textbook."
+        state["answer"] = greeting_text
+        state["reply"] = greeting_text
+        state["citations"] = []
+        state["pages"] = []
+        state["in_scope"] = True
+        state["cache_hit"] = False
+        log.info(f"Classified as GREETING: '{msg}'")
+        return state
 
     session = _sessions.get(state.get("session_id", ""))
     has_prev_answer = bool(session and session.get("last_answer"))
@@ -127,13 +145,25 @@ def classify_message(state: PipelineState) -> PipelineState:
 # ---- cache lookup ----
 
 def cache_lookup(state: PipelineState) -> PipelineState:
-    """Check cache. STYLE always skips. FOLLOW_UP uses contextual exact only."""
+    """Check cache. GREETING, STYLE, and numerical questions always skip. FOLLOW_UP uses contextual exact only."""
     msg_type = state["msg_type"]
+
+    if msg_type == "GREETING":
+        state["cache_hit"] = False
+        state["cache_reason"] = "skip: greeting"
+        log.info("Cache: skip (greeting)")
+        return state
 
     if msg_type == "STYLE":
         state["cache_hit"] = False
         state["cache_reason"] = "skip: style request"
         log.info("Cache: skip (style)")
+        return state
+
+    if is_numerical_question(state["message"]):
+        state["cache_hit"] = False
+        state["cache_reason"] = "skip: numerical question"
+        log.info("Cache: skip (numerical)")
         return state
 
     session = _sessions.get(state["session_id"])
@@ -161,11 +191,12 @@ def cache_lookup(state: PipelineState) -> PipelineState:
     return state
 
 
-def _invoke_llm(messages: list[dict], max_retries: int = 1):
+def _invoke_llm(messages: list[dict], llm_client=None, max_retries: int = 1):
     """Invoke the LLM, retrying once on 429 rate limit."""
+    client = llm_client if llm_client is not None else _llm
     for attempt in range(max_retries + 1):
         try:
-            return _llm.invoke(messages)
+            return client.invoke(messages)
         except Exception as e:
             err_str = str(e).lower()
             is_429 = "429" in err_str or "rate limit" in err_str or getattr(e, "status_code", None) == 429
@@ -174,6 +205,52 @@ def _invoke_llm(messages: list[dict], max_retries: int = 1):
                 time.sleep(1.0)
                 continue
             raise
+
+
+def _parse_llm_json(raw: str, docs: list[dict]) -> tuple[str, bool, list[str]]:
+    """Parse JSON reply from the LLM, extracting (answer, in_scope, used_chapters)."""
+    if raw.startswith("```"):
+        raw = re.sub(r"^```\w*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+    try:
+        data = json.loads(raw)
+        in_scope = data.get("in_scope", True)
+        if not in_scope:
+            return STANDARD_DECLINE_MESSAGE, False, []
+        return data.get("answer", raw), True, data.get("used_chapters", [])
+    except json.JSONDecodeError:
+        log.warning(f"LLM returned non-JSON: {raw[:100]}")
+        return raw, True, [docs[0]["chapter"]] if docs else []
+
+
+def is_incomplete_answer(text: str) -> bool:
+    """Check if the answer says the context does not cover something,
+    or mentions a figure or table that is not included."""
+    if not text:
+        return False
+    lower = text.lower()
+
+    # 1. Context does not cover / mention / provide / contain / include
+    context_patterns = [
+        r"\b(context|provided context|text)\b.*?\b(does not|doesn't|cannot|can't|not)\b.*?\b(cover|mention|provide|contain|include|state|have|give|explain|specify)\b",
+        r"\bnot\s+(covered|mentioned|provided|contained|included|given)\s+in\s+(the\s+)?context\b",
+        r"\b(not enough|insufficient|lacks|missing)\s+(information|context|details)\b",
+        r"\bprovided\s+context\s+(does\s+not|doesn't)\b",
+    ]
+    for pat in context_patterns:
+        if re.search(pat, lower):
+            return True
+
+    # 2. Mentions a figure or table that is not included / missing
+    fig_patterns = [
+        r"\b(figure|fig\.|table|diagram)\b.*?\b(not\s+(included|provided|shown|available|given|present)|is\s+missing|missing)\b",
+        r"\b(not\s+(included|provided|shown|available|given|present)|missing)\b.*?\b(figure|fig\.|table|diagram)\b",
+    ]
+    for pat in fig_patterns:
+        if re.search(pat, lower):
+            return True
+
+    return False
 
 
 # ---- rewrite (follow-up only) ----
@@ -242,40 +319,41 @@ def generate(state: PipelineState) -> PipelineState:
         return state  # already declined in scope_check
 
     docs = state["retrieved_docs"]
-    context = "\n\n---\n\n".join(
-        f"[Chapter: {d['chapter']}, Page: {d['page']}]\n{d['text']}"
-        for d in docs
-    )
     question = state.get("standalone_question") or state["message"]
 
-    messages = [
-        {"role": "system", "content": ANSWER_SYSTEM.format(context=context)},
-        {"role": "user", "content": ANSWER_HUMAN.format(question=question)},
-    ]
+    is_num = is_numerical_question(question)
+    system_tmpl = NUMERIC_SYSTEM if is_num else ANSWER_SYSTEM
+    llm_client = _numeric_llm if (is_num and _numeric_llm is not None) else _llm
 
-    response = _invoke_llm(messages)
-    raw = response.content.strip()
+    def _call_model(current_docs):
+        ctx = "\n\n---\n\n".join(
+            f"[Chapter: {d['chapter']}, Page: {d['page']}]\n{d['text']}"
+            for d in current_docs
+        )
+        msgs = [
+            {"role": "system", "content": system_tmpl.format(context=ctx)},
+            {"role": "user", "content": ANSWER_HUMAN.format(question=question)},
+        ]
+        resp = _invoke_llm(msgs, llm_client=llm_client)
+        return _parse_llm_json(resp.content.strip(), current_docs)
 
-    # Parse JSON response
-    try:
-        # Strip markdown code fences if present
-        if raw.startswith("```"):
-            raw = re.sub(r"^```\w*\n?", "", raw)
-            raw = re.sub(r"\n?```$", "", raw)
-        data = json.loads(raw)
-        in_scope = data.get("in_scope", True)
-        state["in_scope"] = in_scope
-        if not in_scope:
-            state["answer"] = STANDARD_DECLINE_MESSAGE
-            state["used_chapters"] = []
-        else:
-            state["answer"] = data.get("answer", raw)
-            state["used_chapters"] = data.get("used_chapters", [])
-    except json.JSONDecodeError:
-        log.warning(f"LLM returned non-JSON: {raw[:100]}")
-        state["in_scope"] = True
-        state["answer"] = raw
-        state["used_chapters"] = [docs[0]["chapter"]] if docs else []
+    ans, in_scope, used_ch = _call_model(docs)
+
+    # Check for incomplete answers: retry once with 8 chunks
+    if in_scope and is_incomplete_answer(ans):
+        log.info("Answer flagged as incomplete (attempt 1); retrying with 8 chunks...")
+        docs8 = _retriever.search(question, top_k=8)
+        state["retrieved_docs"] = docs8
+        ans, in_scope, used_ch = _call_model(docs8)
+        if not in_scope or is_incomplete_answer(ans):
+            log.info("Answer still incomplete after 8 chunks; declining.")
+            in_scope = False
+            ans = STANDARD_DECLINE_MESSAGE
+            used_ch = []
+
+    state["in_scope"] = in_scope
+    state["answer"] = ans
+    state["used_chapters"] = used_ch
 
     return state
 
@@ -393,6 +471,12 @@ def finalize(state: PipelineState) -> PipelineState:
             state["reply"] = state.get("answer", "Something went wrong. Please try again.")
         # citations and pages already set by validate()
 
+    # Strip any line starting with "Chapter:" from replies
+    if state.get("reply"):
+        lines = state["reply"].splitlines()
+        cleaned_lines = [l for l in lines if not l.strip().lower().startswith("chapter:")]
+        state["reply"] = "\n".join(cleaned_lines).strip()
+
     elapsed = time.perf_counter() - state["start_time"]
     state["latency_ms"] = round(elapsed * 1000, 1)
 
@@ -419,6 +503,8 @@ def route_after_cache(state: PipelineState) -> str:
     """Route based on cache result."""
     if state.get("cache_hit"):
         return "finalize"
+    if state["msg_type"] == "GREETING":
+        return "finalize"
     if state["msg_type"] == "STYLE":
         return "generate"
     if state["msg_type"] == "FOLLOW_UP":
@@ -437,6 +523,7 @@ def route_after_scope(state: PipelineState) -> str:
 
 # Module-level singletons, initialized via init_pipeline()
 _llm = None
+_numeric_llm = None
 _retriever = None
 _cache = None
 _sessions = None
@@ -445,10 +532,11 @@ _graph = None
 
 def init_pipeline(sessions: SessionStore | None = None):
     """Initialize singletons and compile the LangGraph."""
-    global _llm, _retriever, _cache, _sessions, _graph
+    global _llm, _numeric_llm, _retriever, _cache, _sessions, _graph
 
     log.info("Initializing pipeline...")
     _llm = get_llm()
+    _numeric_llm = get_numeric_llm()
     _retriever = BookRetriever()
     _cache = CacheStore()
     _sessions = sessions or SessionStore()

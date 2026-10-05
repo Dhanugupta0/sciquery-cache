@@ -213,3 +213,125 @@ class TestFollowUpClassification:
         state = {"session_id": sid, "message": msg}
         res = classify_message(state)
         assert res["msg_type"] == "FOLLOW_UP"
+
+
+class TestIncompleteAnswerRetryAndDecline:
+    """If model answer says context does not cover something or mentions missing figure/table,
+    retry once with 8 chunks. If still incomplete, decline with citations = [] and never cache."""
+
+    def test_incomplete_answer_retry_still_incomplete_declines(self, pipeline_env):
+        import app.graph as graph_mod
+        run = pipeline_env["run"]
+        sessions = pipeline_env["sessions"]
+
+        real_llm = graph_mod._llm
+        mock_llm = MagicMock()
+
+        # Both attempts return incomplete answers mentioning lack of context / missing figure
+        resp1 = json.dumps({
+            "in_scope": True,
+            "answer": "The provided context does not cover the complete table.",
+            "used_chapters": ["Light – Reflection and Refraction"],
+        })
+        resp2 = json.dumps({
+            "in_scope": True,
+            "answer": "Table 9.2 is not included in the provided text.",
+            "used_chapters": ["Light – Reflection and Refraction"],
+        })
+        mock_llm.invoke.side_effect = [MagicMock(content=resp1), MagicMock(content=resp2)]
+        graph_mod._llm = mock_llm
+
+        try:
+            sid = sessions.create()
+            result = run(sid, "Explain the table in light reflection")
+            # Should have retried once (2 LLM calls total)
+            assert mock_llm.invoke.call_count == 2
+            # Final output must be standard decline
+            assert result["reply"] == graph_mod.STANDARD_DECLINE_MESSAGE
+            assert result["citations"] == []
+            assert result["cache_hit"] is False
+        finally:
+            graph_mod._llm = real_llm
+
+    def test_incomplete_answer_retry_succeeds(self, pipeline_env):
+        import app.graph as graph_mod
+        run = pipeline_env["run"]
+        sessions = pipeline_env["sessions"]
+
+        real_llm = graph_mod._llm
+        mock_llm = MagicMock()
+
+        # Attempt 1 is incomplete; Attempt 2 (with 8 chunks) succeeds
+        resp1 = json.dumps({
+            "in_scope": True,
+            "answer": "Figure 9.1 is not included in the context.",
+            "used_chapters": ["Light – Reflection and Refraction"],
+        })
+        resp2 = json.dumps({
+            "in_scope": True,
+            "answer": "A convex mirror always forms a virtual and erect image.",
+            "used_chapters": ["Light – Reflection and Refraction"],
+        })
+        mock_llm.invoke.side_effect = [MagicMock(content=resp1), MagicMock(content=resp2)]
+        graph_mod._llm = mock_llm
+
+        try:
+            sid = sessions.create()
+            result = run(sid, "What is the nature of image formed by a convex mirror?")
+            assert mock_llm.invoke.call_count == 2
+            assert "virtual and erect" in result["reply"]
+            assert result["citations"] == ["Light – Reflection and Refraction"]
+        finally:
+            graph_mod._llm = real_llm
+
+
+class TestGreetingHandler:
+    """Greeting handler: for hi, hello, hii, hey, thanks, return greeting with no LLM call and no caching."""
+
+    @pytest.mark.parametrize("greeting", ["hi", "hello", "hii", "hey", "thanks", "Hi!", "Hello."])
+    def test_greetings_zero_llm_and_no_cache(self, pipeline_env, greeting):
+        import app.graph as graph_mod
+        run = pipeline_env["run"]
+        sessions = pipeline_env["sessions"]
+
+        real_llm = graph_mod._llm
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = AssertionError("LLM should NOT be called for greetings")
+        graph_mod._llm = mock_llm
+
+        try:
+            sid = sessions.create()
+            result = run(sid, greeting)
+            assert result["reply"] == "Hi! Ask me any doubt from the NCERT Class 10 Science textbook."
+            assert result["citations"] == []
+            assert result["cache_hit"] is False
+            mock_llm.invoke.assert_not_called()
+        finally:
+            graph_mod._llm = real_llm
+
+
+class TestChapterLineStripping:
+    """Strip any line starting with 'Chapter:' from replies."""
+
+    def test_strip_chapter_lines(self, pipeline_env):
+        import app.graph as graph_mod
+        run = pipeline_env["run"]
+        sessions = pipeline_env["sessions"]
+
+        real_llm = graph_mod._llm
+        mock_llm = MagicMock()
+        mock_resp = json.dumps({
+            "in_scope": True,
+            "answer": "Chapter: Electricity\nElectric current is the rate of flow of electric charges.\nChapter: Summary",
+            "used_chapters": ["Electricity"],
+        })
+        mock_llm.invoke.return_value = MagicMock(content=mock_resp)
+        graph_mod._llm = mock_llm
+
+        try:
+            sid = sessions.create()
+            result = run(sid, "What is electric current?")
+            assert "Chapter:" not in result["reply"]
+            assert result["reply"] == "Electric current is the rate of flow of electric charges."
+        finally:
+            graph_mod._llm = real_llm

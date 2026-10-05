@@ -278,6 +278,17 @@ class TestCachePolicy:
         ok, _ = should_cache("hello", "Hi there!", [], in_scope=True, is_style=False)
         assert not ok
 
+    def test_numerical_not_cached(self):
+        ok, reason = should_cache(
+            "A convex lens has focal length 20 cm. An object is placed 30 cm from it. Find the image distance.",
+            "v = +60 cm",
+            ["Light – Reflection and Refraction"],
+            in_scope=True,
+            is_style=False,
+        )
+        assert not ok
+        assert "numerical question" in reason
+
 
 class TestNumberExtraction:
     def test_extracts_with_units(self):
