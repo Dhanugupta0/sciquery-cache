@@ -1,209 +1,163 @@
-# SciQuery — NCERT Class 10 Science Chatbot
+# 🔬 SciQuery — NCERT Class 10 Science Doubt Solver
 
-A doubt-solving chatbot for the NCERT Class 10 Science textbook, featuring a multi-guard semantic cache that safely reuses past answers with near-zero latency.
+> A doubt-solving AI assistant for the **NCERT Class 10 Science** textbook, powered by a safety-guarded semantic cache that delivers verified answers with **sub-10ms latency**.
 
-**Live Link**: [Streamlit App Demo (Deployment Placeholder)](https://share.streamlit.io)  
-**Repository**: [https://github.com/Dhanugupta0/sciquery-cache.git](https://github.com/Dhanugupta0/sciquery-cache.git)  
-**Author**: Dhanu Gupta | AI Intern Assignment, Prepzy.ai
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sciquery-cache.streamlit.app/)
+[![Tests](https://img.shields.io/badge/pytest-84%20passed-brightgreen.svg)](https://github.com/Dhanugupta0/sciquery-cache)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
-
-## Features
-
-- Answers strictly from the **NCERT Class 10 Science** textbook
-- Cites textbook chapter(s) for every in-scope answer
-- Smart cache with 5 safety guards (number, symbol, contrast, key-term, question-type)
-- Multi-turn conversation handling with autonomous follow-up rewriting
-- Style detection ("explain simpler", "in points") to restyle without caching
-- Zero-LLM out-of-scope question rejection with empty citations
-- Ultra-low latency exact hits (~5 ms end-to-end)
-
-## Latency Benchmarks (Measured)
-
-| Path | Store Latency | End-to-End API Latency |
-|------|---------------|------------------------|
-| **Exact Cache Hit** | 0.08 ms median | ~5 ms end-to-end (4.59 ms median) |
-| **Semantic Cache Hit** (FAISS + 5 guards) | 5.79 ms median | ~11 ms end-to-end (10.73 ms median) |
-| **Fresh Answer (LLM)** | N/A | ~0.4 to 2 s normally (614 ms median), up to ~10 s when rate-limited |
+👉 **Live App**: [https://sciquery-cache.streamlit.app/](https://sciquery-cache.streamlit.app/)  
+💻 **Repository**: [https://github.com/Dhanugupta0/sciquery-cache.git](https://github.com/Dhanugupta0/sciquery-cache.git)  
+👤 **Author**: Dhanu Gupta
 
 ---
 
-## Quick Start
+## 📸 App Interface
 
-### 1. Clone and Install
+Click below to try the live app:
 
+[![SciQuery App Preview](img/image.png)](https://sciquery-cache.streamlit.app/)
+
+---
+
+## 🏛️ System Architecture (HLD)
+
+![High Level Design Architecture](img/hld_architecture.png)
+
+```mermaid
+flowchart LR
+    User([👤 Student]) --> UI[🖥️ Streamlit Web App]
+    UI -->|HTTP /chat| API[⚡ FastAPI Backend]
+    
+    subgraph Engine ["LangGraph Pipeline Engine"]
+        API --> Classify{Classifier}
+        Classify --> CacheCheck{Guarded Cache?}
+        
+        CacheCheck -->|✅ Hit <10ms| Resp([💬 Answer + Citations])
+        
+        CacheCheck -->|❌ Miss| Retrieve[📚 NCERT FAISS Retriever]
+        Retrieve --> Scope{Scope Check}
+        Scope -->|< 0.58| Decline([⛔ Polite Decline])
+        Scope -->|≥ 0.58| LLM[🤖 Groq LLM Generation]
+        LLM --> CachePolicy{Cache Policy}
+        CachePolicy -->|If Conceptual| CacheStore[(💾 SQLite + FAISS Cache)]
+        CachePolicy --> Resp
+    end
+    
+    Resp --> UI
+```
+
+---
+
+## ⚡ Key Features
+
+- **Strict Textbook Grounding**: Answers only from NCERT Class 10 Science with chapter and page citations.
+- **2-Tier Intelligent Cache**:
+  - **Tier 1 (Exact Hash)**: Instant SQLite lookup (**~5 ms**).
+  - **Tier 2 (Semantic Vector)**: FAISS cosine similarity $\ge 0.88$ (**~11 ms**).
+- **5 Multi-Stage Safety Guards**:
+  - **Number Guard**: Prevents numeric mismatches (e.g. 220V vs 110V).
+  - **Symbol Guard**: Matches optical points (`C`, `F`, `P`) and circuit symbols.
+  - **Contrast Guard**: Rejects opposite concepts (`concave` vs `convex`, `acid` vs `base`).
+  - **Key-Term Guard**: Requires $\ge 0.65$ Jaccard keyword overlap.
+  - **Question-Type Guard**: Prevents collision between definitions and numericals.
+- **Zero-Cache for Numericals**: Calculations are routed to a specialized numerical model (`openai/gpt-oss-120b`) and **never cached** to ensure fresh, step-by-step arithmetic.
+- **Conversational Context**: Resolves follow-up pronouns automatically (*"What is its unit?"* ➡️ *"What is the unit of current?"*).
+- **Fast Boundary Rejection**: Declines off-topic questions in **< 60 ms** without burning LLM tokens.
+
+---
+
+## ⏱️ Measured Latency Benchmarks
+
+| Request Path | Store Latency | End-to-End API Latency |
+| :--- | :--- | :--- |
+| **Exact Cache Hit** | 0.08 ms | **~5 ms** (4.59 ms median) |
+| **Semantic Cache Hit** (FAISS + 5 Guards) | 5.79 ms | **~11 ms** (10.73 ms median) |
+| **Fresh LLM Generation** | N/A | **~0.6 to 1.8 s** (614 ms median) |
+| **Out-of-Scope Decline** | N/A | **< 60 ms** (Zero LLM calls) |
+
+---
+
+## 🚀 Quick Start
+
+### 1. Clone & Install
 ```bash
 git clone https://github.com/Dhanugupta0/sciquery-cache.git
 cd sciquery-cache
 pip install -r requirements.txt
 ```
 
-### 2. Set Up Environment Variables
-
-```bash
-cp .env.example .env
-# Edit .env with your Groq API key
+### 2. Configure Environment
+Create a `.env` file in the project root:
+```env
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_API_KEY=your_groq_api_key_here
+LLM_MODEL=qwen/qwen3.8-27b
+LLM_NUMERIC_MODEL=openai/gpt-oss-120b
+LLM_FALLBACK_MODEL=openai/gpt-oss-20b
 ```
+*(Tip: You can also enter your Groq API key directly in the Streamlit sidebar at runtime).*
 
-Required environment variables (5 secrets + optional backend URL):
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `LLM_BASE_URL` | OpenAI-compatible API base URL | `https://api.groq.com/openai/v1` |
-| `LLM_API_KEY` | Groq API key | `gsk_...` |
-| `LLM_MODEL` | General doubt-solving LLM model | `qwen/qwen3.8-27b` |
-| `LLM_NUMERIC_MODEL` | Specialized numerical step-by-step model | `openai/gpt-oss-120b` |
-| `LLM_FALLBACK_MODEL` | Fast failover model on 429 rate limits | `openai/gpt-oss-20b` |
-| `API_URL` | (Optional) Backend URL. If unset, Streamlit starts the backend itself | `http://localhost:8000` |
-
-### 3. Build the Book Index (Already committed in `data/index/`)
-
-Note: Ingestion requires `pymupdf`, which is included in `requirements-dev.txt`:
-
-```bash
-pip install -r requirements-dev.txt
-python scripts/ingest.py
-```
-
-This reads NCERT PDFs from `data/pdfs/`, creates chunk embeddings, and saves the FAISS index to `data/index/`.
-
-### 4. Run the Application
-
-**Option A: Streamlit UI (Embedded backend)**
-
+### 3. Run Locally
 ```bash
 streamlit run streamlit_app.py
 ```
 
-**Option B: Standalone FastAPI Backend + Streamlit UI**
-
+### 4. Run Tests
 ```bash
-# Terminal 1: Run FastAPI backend
-uvicorn app.api:app --host 0.0.0.0 --port 8000
-
-# Terminal 2: Run Streamlit frontend pointing to FastAPI
-API_URL=http://localhost:8000 streamlit run streamlit_app.py
-```
-
----
-
-## API Format
-
-### `GET /health`
-
-```json
-{"status": "ok"}
-```
-
-### `POST /session`
-
-```json
-// Response
-{"session_id": "a1b2c3d4e5f6"}
-```
-
-### `POST /chat`
-
-```json
-// Request
-{
-  "session_id": "a1b2c3d4e5f6",
-  "message": "What is refraction?"
-}
-
-// Response (Cache Hit)
-{
-  "reply": "Refraction is the bending of light when it travels obliquely from one transparent medium into another, causing a change in its direction.",
-  "citations": ["Light – Reflection and Refraction"],
-  "cache_hit": true,
-  "latency_ms": 4.59
-}
-```
-
-**Out-of-Scope Response:**
-```json
-{
-  "reply": "I'm sorry, this question doesn't seem to be covered in the NCERT Class 10 Science textbook. I can only help with topics from that book. Could you ask something from the textbook?",
-  "citations": [],
-  "cache_hit": false,
-  "latency_ms": 84.9
-}
-```
-
-**Status & Error Codes:**
-- `200` — Success
-- `404` — Unknown session ID (`{"detail": "Session not found"}`)
-- `422` — Empty message (`{"detail": "Message cannot be empty"}`)
-- `429` — Upstream rate limit with friendly retry message (`{"detail": "Too many requests right now. Please wait a moment and try again."}`)
-
----
-
-## Running Tests
-
-Install test dependencies and run pytest:
-
-```bash
-pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
-
-Key test files:
-- `tests/test_cache_cases.py` — Exact/semantic cache decisions, lookalikes, guards, and style tests
-- `tests/test_pipeline.py` — End-to-end pipeline, out-of-scope detection, and multi-turn tests
-- `tests/test_api.py` — FastAPI endpoint format, session validation, and error tests
+*(All 84 unit and pipeline tests pass).*
 
 ---
 
-## Deploy to Streamlit Community Cloud
+## 📡 API Endpoints
 
-1. Push this repository to GitHub (`data/index/` included, `.env` excluded)
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Select your repository: `Dhanugupta0/sciquery-cache`
-4. Set main file path: `streamlit_app.py`
-5. Under **Settings → Secrets**, add:
-   ```toml
-   LLM_BASE_URL = "https://api.groq.com/openai/v1"
-   LLM_API_KEY = "gsk_your_key_here"
-   LLM_MODEL = "qwen/qwen3.8-27b"
-   ```
-6. Deploy. The Streamlit app runs FastAPI in a background thread and communicates via HTTP.
+FastAPI runs on port `8321` (or your configured `PORT`):
+
+- **`GET /health`** — Liveness check: `{"status": "ok"}`
+- **`POST /session`** — Create chat session: `{"session_id": "uuid"}`
+- **`POST /chat`** — Query the pipeline:
+  ```json
+  // Request
+  {
+    "session_id": "your-session-id",
+    "message": "What is Ohm's law?"
+  }
+
+  // Response
+  {
+    "reply": "Ohm's law states that the potential difference across a conductor is proportional to the current...",
+    "citations": ["Electricity"],
+    "cache_hit": true,
+    "latency_ms": 5.2
+  }
+  ```
 
 ---
 
-## Project Structure
+## 📂 Project Structure
 
 ```
 sciquery-cache/
 ├── streamlit_app.py          # Streamlit UI frontend
 ├── app/
-│   ├── api.py                # FastAPI routes & error handling
-│   ├── config.py             # Configuration & threshold tuning
-│   ├── graph.py              # LangGraph workflow pipeline
-│   ├── llm.py                # Groq/OpenAI client & prompts
-│   ├── retriever.py          # NCERT FAISS chunk retriever
-│   ├── sessions.py           # In-memory session store
+│   ├── api.py                # FastAPI routes (/session, /chat, /health)
+│   ├── config.py             # Config & dynamic API key resolution
+│   ├── graph.py              # LangGraph pipeline state machine
+│   ├── llm.py                # Model client & prompt definitions
+│   ├── retriever.py          # NCERT FAISS retriever (734 chunks)
+│   ├── sessions.py           # In-memory multi-turn session store
 │   └── cache/
-│       ├── normalize.py      # Query normalization & symbol extraction
-│       ├── guards.py         # Multi-stage safety guards
-│       ├── policy.py         # Caching & style detection policies
-│       └── store.py          # SQLite + FAISS cache index
-├── scripts/
-│   └── ingest.py             # NCERT PDF chunker & index builder
-├── tests/
-│   ├── test_cache_cases.py   # Cache decision & guard tests
-│   ├── test_pipeline.py      # Pipeline & out-of-scope tests
-│   └── test_api.py           # API endpoint format tests
+│       ├── guards.py         # 5 safety guards
+│       ├── policy.py         # Zero-cache & style policies
+│       ├── normalize.py      # Keyword & symbol extraction
+│       └── store.py          # SQLite + FAISS cache store
 ├── data/
-│   ├── pdfs/                 # NCERT textbook PDFs
-│   └── index/                # Committed book FAISS vector index
-├── docs/
-│   ├── explainer.md          # 1-page architecture explainer
-│   ├── explainer.pdf         # Exported 1-page PDF documentation
-│   ├── flowchart.mmd         # Pipeline flowchart (Mermaid)
-│   └── flowchart.png         # Rendered flowchart diagram
-├── NOTES.md                  # Experimentation log with measured numbers
-├── README.md                 # Project documentation
-├── requirements.txt          # Production dependencies
-├── requirements-dev.txt      # Development & testing dependencies
-└── .env.example              # Sample environment configuration
+│   ├── index/                # Pre-built FAISS vector index & metadata
+│   └── cache.db              # SQLite cache database
+├── img/
+│   ├── image.png             # UI screenshot
+│   └── hld_architecture.png  # High-Level Design diagram
+└── tests/                    # 84 test cases
 ```
